@@ -13,8 +13,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # 환경 변수 불러오기 (Bybit용으로 변경)
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
+API_KEY = os.getenv("BYBIT_API_KEY")
+API_SECRET = os.getenv("BYBIT_SECRET_KEY")
 
 # CCXT Bybit 클라이언트 생성
 if API_KEY and API_SECRET:
