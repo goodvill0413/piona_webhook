@@ -1,7 +1,6 @@
 import os
 from dotenv import load_dotenv
-from binance.client import Client
-from binance.error import ClientError
+import ccxt
 from flask import Flask, request, jsonify
 from datetime import datetime
 import logging
@@ -17,13 +16,24 @@ logger = logging.getLogger(__name__)
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_SECRET_KEY")
 
-# Binance Futures Testnet 클라이언트 생성
+# CCXT Binance 클라이언트 생성
 if API_KEY and API_SECRET:
-    client = Client(API_KEY, API_SECRET)
-    client.API_URL = 'https://testnet.binancefuture.com'
-    logger.info("✅ Binance Testnet 클라이언트 초기화 완료")
+    try:
+        exchange = ccxt.binance({
+            'apiKey': API_KEY,
+            'secret': API_SECRET,
+            'sandbox': True,  # 테스트넷 사용
+            'enableRateLimit': True,
+        })
+        logger.info("✅ CCXT Binance 클라이언트 초기화 완료")
+        client_connected = True
+    except Exception as e:
+        logger.error(f"❌ CCXT 초기화 실패: {e}")
+        exchange = None
+        client_connected = False
 else:
-    client = None
+    exchange = None
+    client_connected = False
     logger.warning("⚠️ Binance API 키가 설정되지 않음")
 
 # Flask 앱 생성
@@ -35,7 +45,7 @@ def home():
         "status": "success", 
         "message": "PIONA 자동매매 서버가 실행 중입니다!",
         "timestamp": datetime.now().isoformat(),
-        "binance_connected": client is not None
+        "binance_connected": client_connected
     })
 
 @app.route('/webhook', methods=['POST'])
@@ -45,31 +55,21 @@ def webhook():
         logger.info(f"🔔 웹훅 데이터 수신: {data}")
         print(f"[{datetime.now()}] 웹훅 데이터: {data}")
 
-        if not client:
+        if not exchange:
             logger.error("❌ Binance 클라이언트가 초기화되지 않음")
             return jsonify({"error": "Binance API 키가 설정되지 않았습니다"}), 500
 
         # 신호와 수량 추출
         signal = data.get('signal', data.get('side'))
         quantity = float(data.get('quantity', 0.001))
-        symbol = data.get('symbol', 'BTCUSDT')
+        symbol = data.get('symbol', 'BTC/USDT')
 
         logger.info(f"📊 거래 신호: {signal}, 수량: {quantity}, 심볼: {symbol}")
 
         if signal == 'buy' or signal == 'BUY':
-            order = client.futures_create_order(
-                symbol=symbol,
-                side='BUY',
-                type='MARKET',
-                quantity=quantity
-            )
+            order = exchange.create_market_buy_order(symbol, quantity)
         elif signal == 'sell' or signal == 'SELL':
-            order = client.futures_create_order(
-                symbol=symbol,
-                side='SELL',
-                type='MARKET',
-                quantity=quantity
-            )
+            order = exchange.create_market_sell_order(symbol, quantity)
         else:
             logger.error(f"❌ 잘못된 신호: {signal}")
             return jsonify({"error": "잘못된 신호입니다. 'buy' 또는 'sell'이어야 합니다."}), 400
@@ -84,13 +84,8 @@ def webhook():
             "timestamp": datetime.now().isoformat()
         })
 
-    except ClientError as e:
-        error_msg = f"Binance ClientError: {e.error_code} - {e.message}"
-        logger.error(f"❌ {error_msg}")
-        return jsonify({"error": error_msg}), 500
-
     except Exception as e:
-        error_msg = f"알 수 없는 오류: {str(e)}"
+        error_msg = f"주문 실행 오류: {str(e)}"
         logger.error(f"❌ {error_msg}")
         return jsonify({"error": error_msg}), 500
 
@@ -99,16 +94,16 @@ def health():
     return jsonify({
         "status": "healthy", 
         "timestamp": datetime.now().isoformat(),
-        "binance_connected": client is not None
+        "binance_connected": client_connected
     })
 
 @app.route('/balance')
 def balance():
     try:
-        if not client:
+        if not exchange:
             return jsonify({"error": "Binance 클라이언트가 초기화되지 않음"}), 500
             
-        balance = client.futures_account_balance()
+        balance = exchange.fetch_balance()
         return jsonify({"balance": balance})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
