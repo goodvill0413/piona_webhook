@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from typing import Tuple, Dict, Any
+from typing import Dict, Any
 
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
@@ -15,178 +15,114 @@ load_dotenv()
 API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("API_SECRET")
 IS_TESTNET = os.getenv("TESTNET", "true").lower() in ("1", "true", "yes")
-BASE_URL = os.getenv("BASE_URL", "https://piona.kr").rstrip("/")  # for docs
+BASE_URL = os.getenv("BASE_URL", "https://piona.kr").rstrip("/")
 
 if not API_KEY or not API_SECRET:
     raise RuntimeError("API_KEY / API_SECRET not found. Please set them in environment variables or .env.")
 
-# Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("piona-webhook")
 
-# Bybit client
 client = HTTP(testnet=IS_TESTNET, api_key=API_KEY, api_secret=API_SECRET)
-
 app = Flask(__name__)
 
 # ---------------------------
-# Helpers
+# Trading Logic Functions
 # ---------------------------
-def get_json_from_request() -> Dict[str, Any]:
-    """Robustly parse JSON from TradingView webhook which may send text/plain JSON."""
-    data = request.get_json(silent=True)
-    if data is not None:
-        return data
-    try:
-        text = request.data.decode("utf-8").strip()
-        return json.loads(text) if text else {}
-    except Exception:
-        return {}
 
-def parse_payload(data: Any) -> Tuple[str, float, str]:
-    """
-    Accepts two common formats from TradingView/Pine:
-      A) {"signal": "buy"|"sell", "quantity": 0.01, "symbol": "BTCUSDT"}
-      B) {"action": "entry", "side": "long"|"short", "qty": 0.01, "symbol": "BTCUSDT"}
-    Returns: (side, qty, symbol) where side is "Buy" or "Sell".
-    Raises ValueError on invalid payload.
-    """
-    if not isinstance(data, dict):
-        raise ValueError("Payload must be a JSON object.")
-
-    symbol = str(data.get("symbol", "BTCUSDT")).upper().strip()
-    if not symbol or not symbol.isalnum():
-        raise ValueError("Invalid symbol.")
-
-    # Format A
-    if "signal" in data:
-        sig = str(data.get("signal", "")).lower()
-        qty = float(data.get("quantity", 0.01))
-        if sig not in ("buy", "sell"):
-            raise ValueError("Invalid 'signal' value; expected 'buy' or 'sell'.")
-        side = "Buy" if sig == "buy" else "Sell"
-        return side, qty, symbol
-
-    # Format B
-    if "action" in data or "side" in data or "qty" in data:
-        action = str(data.get("action", "")).lower()
-        side_raw = str(data.get("side", "")).lower()
-        qty = float(data.get("qty", data.get("quantity", 0.01)))
-
-        if action and action != "entry":
-            raise ValueError("Unsupported action. Only 'entry' is allowed here.")
-        if side_raw not in ("long", "short", "buy", "sell"):
-            raise ValueError("Invalid 'side' value; expected long/short or buy/sell.")
-        side = "Buy" if side_raw in ("long", "buy") else "Sell"
-        return side, qty, symbol
-
-    raise ValueError("Unsupported payload shape. Expected keys like 'signal' or 'action/side/qty'.")
-
-def place_market_order(side: str, qty: float, symbol: str) -> Dict[str, Any]:
-    """Places a linear USDT perpetual market order on Bybit."""
+def place_new_order(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """신규 시장가 주문을 실행합니다."""
+    side = "Buy" if str(payload.get("side")).lower() in ("long", "buy") else "Sell"
+    symbol = str(payload.get("symbol", "BTCUSDT")).upper()
+    qty = float(payload.get("qty", 0.0))
+    
     if qty <= 0:
-        raise ValueError("Quantity must be positive.")
-    log.info("Placing order: %s %s %s", side, qty, symbol)
-    resp = client.place_order(
-        category="linear",
-        symbol=symbol,
-        side=side,
-        order_type="Market",
-        qty=qty,
-        time_in_force="GoodTillCancel"
+        raise ValueError("Quantity must be positive for a new order.")
+        
+    log.info(f"🚀 Placing NEW order: {side} {qty} {symbol}")
+    return client.place_order(
+        category="linear", symbol=symbol, side=side, order_type="Market", qty=qty
     )
-    return resp
 
-def extract_wallet_snapshot() -> Dict[str, Any]:
-    """Returns a compact snapshot of wallet/equity."""
-    resp = client.get_wallet_balance(accountType="UNIFIED")
-    item = resp.get("result", {}).get("list", [{}])[0]
-    coin_list = item.get("coin") or []
-    coin_row = next((c for c in coin_list if c.get("coin") == "USDT"), coin_list[0] if coin_list else {})
-    snapshot = {
-        "equity": item.get("totalEquity"),
-        "wallet_balance": item.get("totalWalletBalance"),
-        "unrealized_pnl": item.get("totalPerpUPL"),
-        "account_type": "testnet" if IS_TESTNET else "live",
-        "coin": coin_row.get("coin", "USDT"),
-        "coin_wallet_balance": coin_row.get("walletBalance"),
-        "raw": resp  # remove if you don't want to expose raw
-    }
-    return snapshot
+def close_position(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """기존 포지션을 시장가로 종료합니다."""
+    symbol = str(payload.get("symbol", "BTCUSDT")).upper()
+    # Bybit API에서 포지션 종료는 반대 사이드로 주문을 넣어야 합니다.
+    # 현재 포지션 정보를 조회하여 수량과 사이드를 결정해야 합니다.
+    # 이 부분은 실제 구현 시 매우 중요합니다. 아래는 예시 로직입니다.
+    
+    # 1. 현재 포지션 정보 조회
+    positions = client.get_positions(category="linear", symbol=symbol)
+    pos = positions.get("result", {}).get("list", [{}])[0]
+    
+    pos_size = float(pos.get("size", 0))
+    pos_side = pos.get("side") # "Buy" or "Sell"
+    
+    if pos_size <= 0:
+        log.warning(f"⚠️ No open position found for {symbol} to close.")
+        return {"status": "no_position", "message": f"No open position for {symbol}."}
+
+    # 2. 포지션 종료를 위한 반대 주문 생성
+    close_side = "Sell" if pos_side == "Buy" else "Buy"
+    log.info(f"🛑 Closing {pos_side} position for {symbol} with a {close_side} order of {pos_size}.")
+    return client.place_order(
+        category="linear", symbol=symbol, side=close_side, order_type="Market", qty=pos_size, reduce_only=True
+    )
+
+def modify_trailing_stop(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """기존 포지션의 트레일링 스탑을 수정합니다."""
+    symbol = str(payload.get("symbol", "BTCUSDT")).upper()
+    new_stop_price = float(payload.get("new_stop", 0.0))
+    
+    if new_stop_price <= 0:
+        raise ValueError("Invalid new_stop price for trailing stop.")
+        
+    log.info(f"🔄 Modifying TRAILING STOP for {symbol} to new price: {new_stop_price}")
+    # Bybit에서는 trailingStop을 설정할 수 있습니다.
+    return client.set_trading_stop(
+        category="linear", symbol=symbol, trailingStop=str(new_stop_price)
+    )
 
 # ---------------------------
 # Routes
 # ---------------------------
+
 @app.get("/")
 def index():
-    return {
-        "app": "piona-webhook",
-        "status": "ok",
-        "env": "testnet" if IS_TESTNET else "live",
-        "endpoints": {
-            "webhook": f"{BASE_URL}/webhook",
-            "balance": f"{BASE_URL}/balance",
-            "health": f"{BASE_URL}/health",
-            "docs": f"{BASE_URL}/docs"
-        }
-    }
-
-@app.get("/docs")
-def docs():
-    return {
-        "message": "PIONA Webhook Bot endpoints",
-        "base_url": BASE_URL,
-        "endpoints": {
-            "POST /webhook": f"{BASE_URL}/webhook",
-            "GET  /balance": f"{BASE_URL}/balance",
-            "GET  /health": f"{BASE_URL}/health"
-        },
-        "payload_examples": {
-            "A_signal": {"signal": "buy", "quantity": 0.01, "symbol": "BTCUSDT"},
-            "B_action": {"action": "entry", "side": "long", "qty": 0.01, "symbol": "BTCUSDT"}
-        },
-        "curl_example": f'curl -X POST {BASE_URL}/webhook -H "Content-Type: application/json" -d "{{\\"signal\\":\\"buy\\",\\"quantity\\":0.01,\\"symbol\\":\\"BTCUSDT\\"}}"'
-    }
-
-@app.get("/health")
-def health():
-    try:
-        client.get_wallet_balance(accountType="UNIFIED")
-        return {"status": "ok", "env": "testnet" if IS_TESTNET else "live"}
-    except Exception as e:
-        log.exception("Health check failed: %s", e)
-        return {"status": "error", "message": str(e)}, 500
-
-@app.get("/balance")
-def balance():
-    try:
-        snapshot = extract_wallet_snapshot()
-        return jsonify(snapshot)
-    except Exception as e:
-        log.exception("Balance failed: %s", e)
-        return {"error": str(e)}, 500
+    return { "app": "piona-webhook-v2", "status": "ok", "env": "testnet" if IS_TESTNET else "live" }
 
 @app.post("/webhook")
 def webhook():
-    payload = get_json_from_request()
-    log.info("🔔 Webhook received: %s", payload)
-
-    if not payload:
-        return {"error": "Empty or invalid JSON payload."}, 400
-
+    """메인 웹훅 핸들러: 모든 트레이딩뷰 알림을 받아 처리합니다."""
     try:
-        side, qty, symbol = parse_payload(payload)
-        order_resp = place_market_order(side, qty, symbol)
-        log.info("✅ Order placed: %s", order_resp)
+        payload = request.get_json()
+        if not payload or not isinstance(payload, dict):
+            return {"status": "error", "message": "Invalid or empty JSON payload."}, 400
+        
+        log.info(f"🔔 Webhook received: {payload}")
+        action = str(payload.get("action", "unknown")).lower()
+        
+        response_data = {}
 
-        try:
-            snapshot = extract_wallet_snapshot()
-        except Exception:
-            snapshot = {}
+        if action == "entry":
+            response_data = place_new_order(payload)
+        elif action in ["time_exit", "emergency_close"]:
+            response_data = close_position(payload)
+        elif action == "trail_update":
+            response_data = modify_trailing_stop(payload)
+        else:
+            # Pine Script의 strategy.exit()에 의한 기본 익절/손절 처리 등
+            # action이 명확하지 않은 경우를 처리합니다.
+            log.warning(f"⚠️ Received unhandled or generic action: '{action}'. Payload: {payload}")
+            # 필요에 따라 여기서도 포지션을 종료하는 로직을 추가할 수 있습니다.
+            # response_data = close_position(payload)
+            return {"status": "ok", "message": "Generic alert received and logged."}, 200
 
-        return jsonify({"status": "ok", "order": order_resp, "balance": snapshot})
+        log.info(f"✅ Action '{action}' processed successfully.")
+        return jsonify({"status": "ok", "action": action, "response": response_data})
+
     except Exception as e:
-        log.exception("Order failed: %s", e)
+        log.exception(f"❌ Error processing webhook: {e}")
         return {"status": "error", "message": str(e)}, 500
 
 # ---------------------------
