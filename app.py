@@ -1,140 +1,197 @@
 import os
+import json
+import logging
+from typing import Tuple, Dict, Any
+
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from pybit.unified_trading import HTTP
-import logging
 
-# .env 파일에서 환경 변수를 로드합니다.
+# ---------------------------
+# Configuration & Setup
+# ---------------------------
 load_dotenv()
 
-# 로깅 설정
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# 환경 변수에서 API 키와 시크릿을 불러옵니다.
 API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("API_SECRET")
+IS_TESTNET = os.getenv("TESTNET", "true").lower() in ("1", "true", "yes")
+BASE_URL = os.getenv("BASE_URL", "https://piona.kr").rstrip("/")  # for docs
 
-# API 키가 설정되지 않았을 경우 오류를 발생시킵니다.
 if not API_KEY or not API_SECRET:
-    raise ValueError("API_KEY와 API_SECRET 환경 변수를 설정해야 합니다.")
+    raise RuntimeError("API_KEY / API_SECRET not found. Please set them in environment variables or .env.")
 
-# Bybit 테스트넷 클라이언트를 생성합니다. (실제 거래 시 testnet=False로 변경)
-try:
-    client = HTTP(
-        testnet=True,
-        api_key=API_KEY,
-        api_secret=API_SECRET
-    )
-    logging.info("Bybit 클라이언트가 성공적으로 생성되었습니다.")
-except Exception as e:
-    logging.error(f"Bybit 클라이언트 생성 실패: {e}")
-    raise
+# Logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("piona-webhook")
 
-# Flask 웹 애플리케이션을 생성합니다.
+# Bybit client
+client = HTTP(testnet=IS_TESTNET, api_key=API_KEY, api_secret=API_SECRET)
+
 app = Flask(__name__)
 
-@app.route('/webhook', methods=['POST'])
+# ---------------------------
+# Helpers
+# ---------------------------
+def get_json_from_request() -> Dict[str, Any]:
+    """Robustly parse JSON from TradingView webhook which may send text/plain JSON."""
+    data = request.get_json(silent=True)
+    if data is not None:
+        return data
+    try:
+        text = request.data.decode("utf-8").strip()
+        return json.loads(text) if text else {}
+    except Exception:
+        return {}
+
+def parse_payload(data: Any) -> Tuple[str, float, str]:
+    """
+    Accepts two common formats from TradingView/Pine:
+      A) {"signal": "buy"|"sell", "quantity": 0.01, "symbol": "BTCUSDT"}
+      B) {"action": "entry", "side": "long"|"short", "qty": 0.01, "symbol": "BTCUSDT"}
+    Returns: (side, qty, symbol) where side is "Buy" or "Sell".
+    Raises ValueError on invalid payload.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("Payload must be a JSON object.")
+
+    symbol = str(data.get("symbol", "BTCUSDT")).upper().strip()
+    if not symbol or not symbol.isalnum():
+        raise ValueError("Invalid symbol.")
+
+    # Format A
+    if "signal" in data:
+        sig = str(data.get("signal", "")).lower()
+        qty = float(data.get("quantity", 0.01))
+        if sig not in ("buy", "sell"):
+            raise ValueError("Invalid 'signal' value; expected 'buy' or 'sell'.")
+        side = "Buy" if sig == "buy" else "Sell"
+        return side, qty, symbol
+
+    # Format B
+    if "action" in data or "side" in data or "qty" in data:
+        action = str(data.get("action", "")).lower()
+        side_raw = str(data.get("side", "")).lower()
+        qty = float(data.get("qty", data.get("quantity", 0.01)))
+
+        if action and action != "entry":
+            raise ValueError("Unsupported action. Only 'entry' is allowed here.")
+        if side_raw not in ("long", "short", "buy", "sell"):
+            raise ValueError("Invalid 'side' value; expected long/short or buy/sell.")
+        side = "Buy" if side_raw in ("long", "buy") else "Sell"
+        return side, qty, symbol
+
+    raise ValueError("Unsupported payload shape. Expected keys like 'signal' or 'action/side/qty'.")
+
+def place_market_order(side: str, qty: float, symbol: str) -> Dict[str, Any]:
+    """Places a linear USDT perpetual market order on Bybit."""
+    if qty <= 0:
+        raise ValueError("Quantity must be positive.")
+    log.info("Placing order: %s %s %s", side, qty, symbol)
+    resp = client.place_order(
+        category="linear",
+        symbol=symbol,
+        side=side,
+        order_type="Market",
+        qty=qty,
+        time_in_force="GoodTillCancel"
+    )
+    return resp
+
+def extract_wallet_snapshot() -> Dict[str, Any]:
+    """Returns a compact snapshot of wallet/equity."""
+    resp = client.get_wallet_balance(accountType="UNIFIED")
+    item = resp.get("result", {}).get("list", [{}])[0]
+    coin_list = item.get("coin") or []
+    coin_row = next((c for c in coin_list if c.get("coin") == "USDT"), coin_list[0] if coin_list else {})
+    snapshot = {
+        "equity": item.get("totalEquity"),
+        "wallet_balance": item.get("totalWalletBalance"),
+        "unrealized_pnl": item.get("totalPerpUPL"),
+        "account_type": "testnet" if IS_TESTNET else "live",
+        "coin": coin_row.get("coin", "USDT"),
+        "coin_wallet_balance": coin_row.get("walletBalance"),
+        "raw": resp  # remove if you don't want to expose raw
+    }
+    return snapshot
+
+# ---------------------------
+# Routes
+# ---------------------------
+@app.get("/")
+def index():
+    return {
+        "app": "piona-webhook",
+        "status": "ok",
+        "env": "testnet" if IS_TESTNET else "live",
+        "endpoints": {
+            "webhook": f"{BASE_URL}/webhook",
+            "balance": f"{BASE_URL}/balance",
+            "health": f"{BASE_URL}/health",
+            "docs": f"{BASE_URL}/docs"
+        }
+    }
+
+@app.get("/docs")
+def docs():
+    return {
+        "message": "PIONA Webhook Bot endpoints",
+        "base_url": BASE_URL,
+        "endpoints": {
+            "POST /webhook": f"{BASE_URL}/webhook",
+            "GET  /balance": f"{BASE_URL}/balance",
+            "GET  /health": f"{BASE_URL}/health"
+        },
+        "payload_examples": {
+            "A_signal": {"signal": "buy", "quantity": 0.01, "symbol": "BTCUSDT"},
+            "B_action": {"action": "entry", "side": "long", "qty": 0.01, "symbol": "BTCUSDT"}
+        },
+        "curl_example": f'curl -X POST {BASE_URL}/webhook -H "Content-Type: application/json" -d "{{\\"signal\\":\\"buy\\",\\"quantity\\":0.01,\\"symbol\\":\\"BTCUSDT\\"}}"'
+    }
+
+@app.get("/health")
+def health():
+    try:
+        client.get_wallet_balance(accountType="UNIFIED")
+        return {"status": "ok", "env": "testnet" if IS_TESTNET else "live"}
+    except Exception as e:
+        log.exception("Health check failed: %s", e)
+        return {"status": "error", "message": str(e)}, 500
+
+@app.get("/balance")
+def balance():
+    try:
+        snapshot = extract_wallet_snapshot()
+        return jsonify(snapshot)
+    except Exception as e:
+        log.exception("Balance failed: %s", e)
+        return {"error": str(e)}, 500
+
+@app.post("/webhook")
 def webhook():
-    """
-    트레이딩뷰 웹훅 신호를 받아 Bybit에 주문을 실행하는 함수
-    """
+    payload = get_json_from_request()
+    log.info("🔔 Webhook received: %s", payload)
+
+    if not payload:
+        return {"error": "Empty or invalid JSON payload."}, 400
+
     try:
-        # 웹훅으로 들어온 JSON 데이터를 파싱합니다.
-        data = request.get_json()
-        if not data:
-            logging.warning("수신된 데이터가 없습니다.")
-            return jsonify({"status": "error", "message": "No data received"}), 400
+        side, qty, symbol = parse_payload(payload)
+        order_resp = place_market_order(side, qty, symbol)
+        log.info("✅ Order placed: %s", order_resp)
 
-        logging.info(f"� 웹훅 데이터 수신: {data}")
-
-        # Pine Script에서 보낸 데이터 키를 파싱합니다.
-        action = data.get('action')
-        side = data.get('side')
-        quantity = data.get('qty')
-        symbol = data.get('symbol', 'BTCUSDT') # 기본값으로 BTCUSDT 사용
-
-        # 필수 데이터가 있는지 확인합니다.
-        if not all([action, side, quantity]):
-            logging.error(f"필수 데이터 누락: action={action}, side={side}, qty={quantity}")
-            return jsonify({"status": "error", "message": "Missing required fields: action, side, qty"}), 400
-        
-        # 수량을 float 형태로 변환합니다.
         try:
-            quantity = float(quantity)
-        except ValueError:
-            logging.error(f"잘못된 수량 값: {quantity}")
-            return jsonify({"status": "error", "message": "Invalid quantity value"}), 400
+            snapshot = extract_wallet_snapshot()
+        except Exception:
+            snapshot = {}
 
-        order_side = ""
-        if side == 'long':
-            order_side = "Buy"
-        elif side == 'short':
-            order_side = "Sell"
-        else:
-            # 'long' 또는 'short'가 아닌 다른 side 값은 무시하거나 로깅합니다.
-            logging.info(f"처리할 수 없는 side 값 수신: {side}")
-            return jsonify({"status": "ignored", "message": f"Side '{side}' is not a trading action"}), 200
-
-        # 'entry' 액션일 때만 주문을 실행합니다.
-        if action == 'entry':
-            logging.info(f"🚀 주문 실행 준비: {symbol} | {order_side} | {quantity}")
-            
-            # Bybit에 시장가 주문을 넣습니다.
-            order = client.place_order(
-                category="linear",
-                symbol=symbol,
-                side=order_side,
-                order_type="Market",
-                qty=str(quantity), # qty는 문자열 형태로 전달해야 합니다.
-                time_in_force="GoodTillCancel"
-            )
-            
-            logging.info(f"✅ 주문 성공: {order}")
-            return jsonify({"status": "success", "order_result": order}), 200
-        else:
-            # 'entry'가 아닌 다른 action(예: trail_update, time_exit)은 무시합니다.
-            logging.info(f"'{action}' 액션은 무시합니다.")
-            return jsonify({"status": "ignored", "message": f"Action '{action}' was ignored"}), 200
-
+        return jsonify({"status": "ok", "order": order_resp, "balance": snapshot})
     except Exception as e:
-        logging.error(f"❌ 웹훅 처리 중 오류 발생: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        log.exception("Order failed: %s", e)
+        return {"status": "error", "message": str(e)}, 500
 
-@app.route('/balance', methods=['GET'])
-def get_balance():
-    """
-    Bybit 계정의 잔액 정보를 조회하는 함수 (여러 지갑 종류 확인)
-    """
-    try:
-        logging.info("💰 잔액 조회 요청 수신")
-        
-        account_types_to_check = ["UNIFIED", "CONTRACT"] # 확인할 지갑 종류 목록
-        all_balances = {}
-
-        for acc_type in account_types_to_check:
-            balance_info = client.get_wallet_balance(accountType=acc_type)
-            if balance_info and balance_info['retCode'] == 0:
-                coin_list = balance_info['result']['list']
-                if coin_list and coin_list[0]['totalWalletBalance'] != '0':
-                    logging.info(f"✅ '{acc_type}' 지갑에서 잔액 발견!")
-                    all_balances[acc_type] = coin_list
-                    break # 잔액을 찾으면 중단
-        
-        if not all_balances:
-            logging.warning("모든 지갑 종류에서 잔액을 찾을 수 없습니다.")
-            return jsonify({
-                "status": "warning", 
-                "message": "Could not find balance in UNIFIED or CONTRACT accounts.",
-                "raw_response_unified": client.get_wallet_balance(accountType="UNIFIED")
-            }), 404
-
-        return jsonify({"status": "success", "balances": all_balances}), 200
-
-    except Exception as e:
-        logging.error(f"❌ 잔액 조회 중 오류 발생: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-if __name__ == '__main__':
-    # Render와 같은 배포 환경에서는 Gunicorn과 같은 WSGI 서버를 사용하므로,
-    # 이 부분은 로컬 테스트용으로만 사용됩니다.
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+# ---------------------------
+# Entrypoint
+# ---------------------------
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
