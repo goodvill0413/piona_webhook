@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Union
 
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
@@ -30,58 +30,81 @@ app = Flask(__name__)
 # Trading Logic Functions
 # ---------------------------
 
+def place_buy_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> Dict[str, Any]:
+    """매수 주문을 실행합니다."""
+    log.info(f"🚀 Placing BUY order: {qty} {symbol}")
+    return client.place_order(
+        category="linear", 
+        symbol=symbol, 
+        side="Buy", 
+        order_type="Market", 
+        qty=str(qty)
+    )
+
+def place_sell_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> Dict[str, Any]:
+    """매도 주문을 실행합니다."""
+    log.info(f"🛑 Placing SELL order: {qty} {symbol}")
+    return client.place_order(
+        category="linear", 
+        symbol=symbol, 
+        side="Sell", 
+        order_type="Market", 
+        qty=str(qty)
+    )
+
+def close_all_positions(symbol: str = "BTCUSDT") -> Dict[str, Any]:
+    """모든 포지션을 종료합니다."""
+    try:
+        positions = client.get_positions(category="linear", symbol=symbol)
+        pos_list = positions.get("result", {}).get("list", [])
+        
+        if not pos_list:
+            log.warning(f"⚠️ No positions found for {symbol}")
+            return {"status": "no_position", "message": f"No positions for {symbol}"}
+        
+        pos = pos_list[0]
+        pos_size = float(pos.get("size", 0))
+        pos_side = pos.get("side")  # "Buy" or "Sell"
+        
+        if pos_size <= 0:
+            log.warning(f"⚠️ No open position found for {symbol}")
+            return {"status": "no_position", "message": f"No open position for {symbol}"}
+
+        # 반대 사이드로 포지션 종료
+        close_side = "Sell" if pos_side == "Buy" else "Buy"
+        log.info(f"🛑 Closing {pos_side} position: {pos_size} {symbol}")
+        
+        return client.place_order(
+            category="linear", 
+            symbol=symbol, 
+            side=close_side, 
+            order_type="Market", 
+            qty=str(pos_size), 
+            reduce_only=True
+        )
+        
+    except Exception as e:
+        log.error(f"Error closing position: {e}")
+        return {"status": "error", "message": str(e)}
+
 def place_new_order(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """신규 시장가 주문을 실행합니다."""
+    """기존 복합 주문 로직 (하위 호환성)"""
     side = "Buy" if str(payload.get("side")).lower() in ("long", "buy") else "Sell"
     symbol = str(payload.get("symbol", "BTCUSDT")).upper()
-    qty = float(payload.get("qty", 0.0))
+    qty = float(payload.get("qty", 0.001))
     
     if qty <= 0:
-        raise ValueError("Quantity must be positive for a new order.")
+        qty = 0.001  # 기본값
         
     log.info(f"🚀 Placing NEW order: {side} {qty} {symbol}")
     return client.place_order(
-        category="linear", symbol=symbol, side=side, order_type="Market", qty=qty
+        category="linear", symbol=symbol, side=side, order_type="Market", qty=str(qty)
     )
 
 def close_position(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """기존 포지션을 시장가로 종료합니다."""
+    """기존 포지션 종료 로직 (하위 호환성)"""
     symbol = str(payload.get("symbol", "BTCUSDT")).upper()
-    # Bybit API에서 포지션 종료는 반대 사이드로 주문을 넣어야 합니다.
-    # 현재 포지션 정보를 조회하여 수량과 사이드를 결정해야 합니다.
-    # 이 부분은 실제 구현 시 매우 중요합니다. 아래는 예시 로직입니다.
-    
-    # 1. 현재 포지션 정보 조회
-    positions = client.get_positions(category="linear", symbol=symbol)
-    pos = positions.get("result", {}).get("list", [{}])[0]
-    
-    pos_size = float(pos.get("size", 0))
-    pos_side = pos.get("side") # "Buy" or "Sell"
-    
-    if pos_size <= 0:
-        log.warning(f"⚠️ No open position found for {symbol} to close.")
-        return {"status": "no_position", "message": f"No open position for {symbol}."}
-
-    # 2. 포지션 종료를 위한 반대 주문 생성
-    close_side = "Sell" if pos_side == "Buy" else "Buy"
-    log.info(f"🛑 Closing {pos_side} position for {symbol} with a {close_side} order of {pos_size}.")
-    return client.place_order(
-        category="linear", symbol=symbol, side=close_side, order_type="Market", qty=pos_size, reduce_only=True
-    )
-
-def modify_trailing_stop(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """기존 포지션의 트레일링 스탑을 수정합니다."""
-    symbol = str(payload.get("symbol", "BTCUSDT")).upper()
-    new_stop_price = float(payload.get("new_stop", 0.0))
-    
-    if new_stop_price <= 0:
-        raise ValueError("Invalid new_stop price for trailing stop.")
-        
-    log.info(f"🔄 Modifying TRAILING STOP for {symbol} to new price: {new_stop_price}")
-    # Bybit에서는 trailingStop을 설정할 수 있습니다.
-    return client.set_trading_stop(
-        category="linear", symbol=symbol, trailingStop=str(new_stop_price)
-    )
+    return close_all_positions(symbol)
 
 # ---------------------------
 # Routes
@@ -89,37 +112,94 @@ def modify_trailing_stop(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get("/")
 def index():
-    return { "app": "piona-webhook-v2", "status": "ok", "env": "testnet" if IS_TESTNET else "live" }
+    return { 
+        "app": "piona-webhook", 
+        "status": "ok", 
+        "env": "testnet" if IS_TESTNET else "live",
+        "endpoints": {
+            "webhook": f"{BASE_URL}/webhook",
+            "health": f"{BASE_URL}/health",
+            "balance": f"{BASE_URL}/balance",
+            "docs": f"{BASE_URL}/docs"
+        }
+    }
+
+@app.get("/health")
+def health():
+    return {"status": "healthy", "testnet": IS_TESTNET}
 
 @app.post("/webhook")
 def webhook():
-    """메인 웹훅 핸들러: 모든 트레이딩뷰 알림을 받아 처리합니다."""
+    """메인 웹훅 핸들러: 모든 TradingView 알림을 받아 처리합니다."""
     try:
-        payload = request.get_json()
-        if not payload or not isinstance(payload, dict):
-            return {"status": "error", "message": "Invalid or empty JSON payload."}, 400
+        # JSON과 텍스트 데이터 모두 처리
+        payload = None
+        raw_data = None
         
-        log.info(f"🔔 Webhook received: {payload}")
-        action = str(payload.get("action", "unknown")).lower()
+        try:
+            # JSON 데이터 시도
+            payload = request.get_json()
+            if payload:
+                log.info(f"📊 Webhook received (JSON): {payload}")
+        except:
+            pass
+        
+        if not payload:
+            # 텍스트 데이터 처리
+            raw_data = request.get_data(as_text=True).strip()
+            log.info(f"📊 Webhook received (TEXT): '{raw_data}'")
+            
+            if not raw_data:
+                log.warning("⚠️ Empty webhook data received")
+                return {"status": "error", "message": "Empty data received"}, 400
+        
+        # 데이터 파싱 및 처리
+        action = None
+        symbol = "BTCUSDT"
+        qty = 0.001
+        
+        if payload and isinstance(payload, dict):
+            # JSON 형식 처리
+            action = str(payload.get("action", "unknown")).lower()
+            symbol = str(payload.get("symbol", "BTCUSDT")).upper()
+            qty = float(payload.get("qty", 0.001))
+        elif raw_data:
+            # 텍스트 형식 처리
+            action = raw_data.lower()
+            
+        log.info(f"🎯 Processing action: '{action}'")
         
         response_data = {}
-
-        if action == "entry":
+        
+        # 액션별 처리
+        if action in ["buy", "long", "entry"]:
+            response_data = place_buy_order(symbol, qty)
+            
+        elif action in ["sell", "short", "exit", "close"]:
+            response_data = place_sell_order(symbol, qty)
+            
+        elif action in ["time_exit", "emergency_close", "stop"]:
+            response_data = close_all_positions(symbol)
+            
+        elif payload and action == "entry":
+            # 기존 복합 JSON 처리
             response_data = place_new_order(payload)
-        elif action in ["time_exit", "emergency_close"]:
+            
+        elif payload and action in ["time_exit", "emergency_close"]:
+            # 기존 복합 JSON 처리
             response_data = close_position(payload)
-        elif action == "trail_update":
-            response_data = modify_trailing_stop(payload)
+            
         else:
-            # Pine Script의 strategy.exit()에 의한 기본 익절/손절 처리 등
-            # action이 명확하지 않은 경우를 처리합니다.
-            log.warning(f"⚠️ Received unhandled or generic action: '{action}'. Payload: {payload}")
-            # 필요에 따라 여기서도 포지션을 종료하는 로직을 추가할 수 있습니다.
-            # response_data = close_position(payload)
-            return {"status": "ok", "message": "Generic alert received and logged."}, 200
+            log.warning(f"⚠️ Unhandled action: '{action}'. Data: {payload or raw_data}")
+            return {"status": "ok", "message": f"Action '{action}' logged but not processed"}, 200
 
-        log.info(f"✅ Action '{action}' processed successfully.")
-        return jsonify({"status": "ok", "action": action, "response": response_data})
+        log.info(f"✅ Action '{action}' processed successfully")
+        return jsonify({
+            "status": "success", 
+            "action": action, 
+            "symbol": symbol,
+            "response": response_data
+        })
 
     except Exception as e:
         log.exception(f"❌ Error processing webhook: {e}")
