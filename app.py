@@ -33,24 +33,58 @@ app = Flask(__name__)
 def place_buy_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> Dict[str, Any]:
     """매수 주문을 실행합니다."""
     log.info(f"🚀 Placing BUY order: {qty} {symbol}")
-    return client.place_order(
-        category="linear", 
-        symbol=symbol, 
-        side="Buy", 
-        orderType="Market",  # 수정: order_type -> orderType
-        qty=str(qty)
-    )
+    
+    # 현재가 조회
+    try:
+        ticker = client.get_tickers(category="linear", symbol=symbol)
+        current_price = float(ticker["result"]["list"][0]["lastPrice"])
+        log.info(f"Current price: {current_price}")
+        
+        return client.place_order(
+            category="linear", 
+            symbol=symbol, 
+            side="Buy", 
+            orderType="Limit",
+            qty=str(qty),
+            price=str(current_price)
+        )
+    except Exception as e:
+        log.error(f"Failed to get current price, falling back to Market order: {e}")
+        return client.place_order(
+            category="linear", 
+            symbol=symbol, 
+            side="Buy", 
+            orderType="Market",
+            qty=str(qty)
+        )
 
 def place_sell_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> Dict[str, Any]:
     """매도 주문을 실행합니다."""
     log.info(f"🛑 Placing SELL order: {qty} {symbol}")
-    return client.place_order(
-        category="linear", 
-        symbol=symbol, 
-        side="Sell", 
-        orderType="Market",  # 수정: order_type -> orderType
-        qty=str(qty)
-    )
+    
+    # 현재가 조회
+    try:
+        ticker = client.get_tickers(category="linear", symbol=symbol)
+        current_price = float(ticker["result"]["list"][0]["lastPrice"])
+        log.info(f"Current price: {current_price}")
+        
+        return client.place_order(
+            category="linear", 
+            symbol=symbol, 
+            side="Sell", 
+            orderType="Limit",
+            qty=str(qty),
+            price=str(current_price)
+        )
+    except Exception as e:
+        log.error(f"Failed to get current price, falling back to Market order: {e}")
+        return client.place_order(
+            category="linear", 
+            symbol=symbol, 
+            side="Sell", 
+            orderType="Market",
+            qty=str(qty)
+        )
 
 def close_all_positions(symbol: str = "BTCUSDT") -> Dict[str, Any]:
     """모든 포지션을 종료합니다."""
