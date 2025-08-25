@@ -37,7 +37,7 @@ def place_buy_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> Dict[str, An
         category="linear", 
         symbol=symbol, 
         side="Buy", 
-        order_type="Market", 
+        orderType="Market",  # 수정: order_type -> orderType
         qty=str(qty)
     )
 
@@ -48,7 +48,7 @@ def place_sell_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> Dict[str, A
         category="linear", 
         symbol=symbol, 
         side="Sell", 
-        order_type="Market", 
+        orderType="Market",  # 수정: order_type -> orderType
         qty=str(qty)
     )
 
@@ -78,9 +78,9 @@ def close_all_positions(symbol: str = "BTCUSDT") -> Dict[str, Any]:
             category="linear", 
             symbol=symbol, 
             side=close_side, 
-            order_type="Market", 
+            orderType="Market",  # 수정: order_type -> orderType
             qty=str(pos_size), 
-            reduce_only=True
+            reduceOnly=True  # 수정: reduce_only -> reduceOnly
         )
         
     except Exception as e:
@@ -98,7 +98,11 @@ def place_new_order(payload: Dict[str, Any]) -> Dict[str, Any]:
         
     log.info(f"🚀 Placing NEW order: {side} {qty} {symbol}")
     return client.place_order(
-        category="linear", symbol=symbol, side=side, order_type="Market", qty=str(qty)
+        category="linear", 
+        symbol=symbol, 
+        side=side, 
+        orderType="Market",  # 수정: order_type -> orderType
+        qty=str(qty)
     )
 
 def close_position(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -211,4 +215,3 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
