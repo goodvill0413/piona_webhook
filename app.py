@@ -31,60 +31,42 @@ app = Flask(__name__)
 # ---------------------------
 
 def place_buy_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> Dict[str, Any]:
-    """매수 주문을 실행합니다."""
-    log.info(f"🚀 Placing BUY order: {qty} {symbol}")
-    
-    # 현재가 조회
+    """
+    매수 시장가 주문을 실행합니다.
+    - 지정가 주문의 시간차 문제를 해결하기 위해 시장가 주문을 사용합니다.
+    """
+    log.info(f"🚀 Placing MARKET BUY order: {qty} {symbol}")
     try:
-        ticker = client.get_tickers(category="linear", symbol=symbol)
-        current_price = float(ticker["result"]["list"][0]["lastPrice"])
-        log.info(f"Current price: {current_price}")
-        
         return client.place_order(
-            category="linear", 
-            symbol=symbol, 
-            side="Buy", 
-            orderType="Limit",
-            qty=str(qty),
-            price=str(current_price)
+            category="linear",
+            symbol=symbol,
+            side="Buy",
+            orderType="Market", # 지정가(Limit) -> 시장가(Market)로 변경
+            qty=str(qty)
+            # 가격(price) 파라미터는 시장가 주문 시 필요 없으므로 제거
         )
     except Exception as e:
-        log.error(f"Failed to get current price, falling back to Market order: {e}")
-        return client.place_order(
-            category="linear", 
-            symbol=symbol, 
-            side="Buy", 
-            orderType="Market",
-            qty=str(qty)
-        )
+        log.error(f"❌ Failed to place buy order: {e}")
+        return {"status": "error", "message": str(e)}
 
 def place_sell_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> Dict[str, Any]:
-    """매도 주문을 실행합니다."""
-    log.info(f"🛑 Placing SELL order: {qty} {symbol}")
-    
-    # 현재가 조회
+    """
+    매도 시장가 주문을 실행합니다.
+    - 지정가 주문의 시간차 문제를 해결하기 위해 시장가 주문을 사용합니다.
+    """
+    log.info(f"🛑 Placing MARKET SELL order: {qty} {symbol}")
     try:
-        ticker = client.get_tickers(category="linear", symbol=symbol)
-        current_price = float(ticker["result"]["list"][0]["lastPrice"])
-        log.info(f"Current price: {current_price}")
-        
         return client.place_order(
-            category="linear", 
-            symbol=symbol, 
-            side="Sell", 
-            orderType="Limit",
-            qty=str(qty),
-            price=str(current_price)
+            category="linear",
+            symbol=symbol,
+            side="Sell",
+            orderType="Market", # 지정가(Limit) -> 시장가(Market)로 변경
+            qty=str(qty)
+            # 가격(price) 파라미터는 시장가 주문 시 필요 없으므로 제거
         )
     except Exception as e:
-        log.error(f"Failed to get current price, falling back to Market order: {e}")
-        return client.place_order(
-            category="linear", 
-            symbol=symbol, 
-            side="Sell", 
-            orderType="Market",
-            qty=str(qty)
-        )
+        log.error(f"❌ Failed to place sell order: {e}")
+        return {"status": "error", "message": str(e)}
 
 def close_all_positions(symbol: str = "BTCUSDT") -> Dict[str, Any]:
     """모든 포지션을 종료합니다."""
@@ -106,15 +88,15 @@ def close_all_positions(symbol: str = "BTCUSDT") -> Dict[str, Any]:
 
         # 반대 사이드로 포지션 종료
         close_side = "Sell" if pos_side == "Buy" else "Buy"
-        log.info(f"🛑 Closing {pos_side} position: {pos_size} {symbol}")
+        log.info(f"🛑 Closing {pos_side} position with MARKET order: {pos_size} {symbol}")
         
         return client.place_order(
-            category="linear", 
-            symbol=symbol, 
-            side=close_side, 
-            orderType="Market",  # 수정: order_type -> orderType
-            qty=str(pos_size), 
-            reduceOnly=True  # 수정: reduce_only -> reduceOnly
+            category="linear",
+            symbol=symbol,
+            side=close_side,
+            orderType="Market",
+            qty=str(pos_size),
+            reduceOnly=True
         )
         
     except Exception as e:
@@ -132,10 +114,10 @@ def place_new_order(payload: Dict[str, Any]) -> Dict[str, Any]:
         
     log.info(f"🚀 Placing NEW order: {side} {qty} {symbol}")
     return client.place_order(
-        category="linear", 
-        symbol=symbol, 
-        side=side, 
-        orderType="Market",  # 수정: order_type -> orderType
+        category="linear",
+        symbol=symbol,
+        side=side,
+        orderType="Market",
         qty=str(qty)
     )
 
@@ -150,15 +132,13 @@ def close_position(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get("/")
 def index():
-    return { 
-        "app": "piona-webhook", 
-        "status": "ok", 
+    return {
+        "app": "piona-webhook",
+        "status": "ok",
         "env": "testnet" if IS_TESTNET else "live",
         "endpoints": {
             "webhook": f"{BASE_URL}/webhook",
             "health": f"{BASE_URL}/health",
-            "balance": f"{BASE_URL}/balance",
-            "docs": f"{BASE_URL}/docs"
         }
     }
 
@@ -170,39 +150,34 @@ def health():
 def webhook():
     """메인 웹훅 핸들러: 모든 TradingView 알림을 받아 처리합니다."""
     try:
-        # JSON과 텍스트 데이터 모두 처리
         payload = None
         raw_data = None
         
         try:
-            # JSON 데이터 시도
             payload = request.get_json()
             if payload:
                 log.info(f"📊 Webhook received (JSON): {payload}")
-        except:
+        except Exception:
             pass
         
         if not payload:
-            # 텍스트 데이터 처리
             raw_data = request.get_data(as_text=True).strip()
             log.info(f"📊 Webhook received (TEXT): '{raw_data}'")
             
             if not raw_data:
                 log.warning("⚠️ Empty webhook data received")
                 return {"status": "error", "message": "Empty data received"}, 400
-        
+    
         # 데이터 파싱 및 처리
         action = None
         symbol = "BTCUSDT"
         qty = 0.001
         
         if payload and isinstance(payload, dict):
-            # JSON 형식 처리
             action = str(payload.get("action", "unknown")).lower()
             symbol = str(payload.get("symbol", "BTCUSDT")).upper()
             qty = float(payload.get("qty", 0.001))
         elif raw_data:
-            # 텍스트 형식 처리
             action = raw_data.lower()
             
         log.info(f"🎯 Processing action: '{action}'")
@@ -210,21 +185,21 @@ def webhook():
         response_data = {}
         
         # 액션별 처리
-        if action in ["buy", "long", "entry"]:
+        # 'entry'는 하위 호환성을 위해 남겨두되, 명확한 'buy'/'long'을 우선 처리
+        if action in ["buy", "long"]:
             response_data = place_buy_order(symbol, qty)
             
-        elif action in ["sell", "short", "exit", "close"]:
+        elif action in ["sell", "short"]:
             response_data = place_sell_order(symbol, qty)
             
-        elif action in ["time_exit", "emergency_close", "stop"]:
+        elif action in ["close", "exit", "time_exit", "emergency_close", "stop"]:
             response_data = close_all_positions(symbol)
             
+        # 하위 호환성을 위한 JSON 처리
         elif payload and action == "entry":
-            # 기존 복합 JSON 처리
             response_data = place_new_order(payload)
             
         elif payload and action in ["time_exit", "emergency_close"]:
-            # 기존 복합 JSON 처리
             response_data = close_position(payload)
             
         else:
@@ -233,8 +208,8 @@ def webhook():
 
         log.info(f"✅ Action '{action}' processed successfully")
         return jsonify({
-            "status": "success", 
-            "action": action, 
+            "status": "success",
+            "action": action,
             "symbol": symbol,
             "response": response_data
         })
@@ -247,5 +222,5 @@ def webhook():
 # Entrypoint
 # ---------------------------
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
+    port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
