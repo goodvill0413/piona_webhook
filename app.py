@@ -128,7 +128,7 @@ def index():
 def health():
     return {"status": "healthy", "testnet": IS_TESTNET}
 
-@app.post("/webhook")
+@app.route("/webhook", methods=['POST'])
 def webhook():
     """메인 웹훅 핸들러: 모든 TradingView 알림을 받아 처리합니다."""
     try:
@@ -211,3 +211,4 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
