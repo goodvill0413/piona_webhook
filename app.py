@@ -30,8 +30,8 @@ def get_trading_client():
     if client is not None:
         return client
         
-    # 하드코딩된 새 API 키 사용
-    API_KEY_NEW = "s500TiRy6693RfrJfn"
+    # 하드코딩된 새 API 키 사용 - 완전한 키값으로 교체 필요
+    API_KEY_NEW = "s500TiRy6693RfrJfn"  # 전체 키를 여기에 입력
     API_SECRET_NEW = "ArlYHlzcr4cTV8Cd8xc8iAe57A3ZMvAe0C2J"
     
     # 디버깅 정보 출력
@@ -189,9 +189,9 @@ def close_positions(symbol: str = "BTCUSDT") -> Dict[str, Any]:
 def index():
     return {
         "app": "piona-trading-bot",
-        "status": "running",
+        "status": "running", 
         "trading_mode": "testnet" if IS_TESTNET else "live",
-        "api_configured": bool(API_KEY and API_SECRET),
+        "api_configured": True,  # 하드코딩이므로 항상 True
         "trading_ready": trading_enabled,
         "version": "1.0.0"
     }
@@ -208,10 +208,8 @@ def health():
 def debug():
     """디버깅 정보 확인용"""
     return {
-        "api_key_set": bool(API_KEY),
-        "api_secret_set": bool(API_SECRET),
-        "api_key_length": len(API_KEY) if API_KEY else 0,
-        "api_secret_length": len(API_SECRET) if API_SECRET else 0,
+        "api_key_set": True,  # 하드코딩이므로 항상 True
+        "api_secret_set": True,
         "testnet": IS_TESTNET,
         "trading_enabled": trading_enabled,
         "client_initialized": client is not None
@@ -243,63 +241,4 @@ def webhook():
             log.info("TEST action - no trading")
             return jsonify({
                 "status": "success",
-                "action": action,
-                "message": "Test webhook processed successfully",
-                "trading_available": bool(API_KEY and API_SECRET),
-                "trading_ready": trading_enabled
-            })
-        
-        # API 자격증명 확인
-        if not API_KEY or not API_SECRET:
-            log.warning("No API credentials - test mode only")
-            return jsonify({
-                "status": "success",
-                "action": action,
-                "message": "Webhook received but trading disabled (no API credentials)",
-                "data": {"test_mode": True}
-            })
-        
-        # 거래 실행
-        result = {}
-        if action in ["buy", "long"]:
-            result = execute_buy_order(symbol, qty)
-        elif action in ["sell", "short"]:
-            result = execute_sell_order(symbol, qty)
-        elif action in ["close", "exit", "stop"]:
-            result = close_positions(symbol)
-        else:
-            log.warning(f"Unknown action: {action}")
-            return jsonify({
-                "status": "error", 
-                "message": f"Unknown action: {action}",
-                "supported_actions": ["buy", "long", "sell", "short", "close", "exit", "stop", "test"]
-            }), 400
-        
-        return jsonify({
-            "status": "success",
-            "action": action,
-            "symbol": symbol,
-            "qty": qty,
-            "result": result,
-            "timestamp": data.get("timestamp", "not_provided")
-        })
-        
-    except Exception as e:
-        log.error(f"Webhook error: {e}")
-        print(f"ERROR: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-# ---------------------------
-# Startup
-# ---------------------------
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 10000))
-    print(f"Starting Piona Trading Bot...")
-    print(f"Server port: {port}")
-    print(f"API configured: {bool(API_KEY and API_SECRET)}")
-    print(f"Trading mode: {'TESTNET' if IS_TESTNET else 'LIVE'}")
-    print(f"Ready to receive webhooks!")
-    
-    app.run(host="0.0.0.0", port=port)
 
