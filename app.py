@@ -30,9 +30,18 @@ def get_trading_client():
     if client is not None:
         return client
         
-    if not API_KEY or not API_SECRET:
-        log.warning("API credentials not found")
-        return None
+    # 하드코딩 테스트
+    API_KEY_HARD = "LX7qZly2dlK5UbIOvv"
+    API_SECRET_HARD = "PdhkzxFnL1AjSl9gv88JdU3VHa4P1YPwpjAU"
+    
+    try:
+        from pybit.unified_trading import HTTP
+        client = HTTP(
+            testnet=True, 
+            api_key=API_KEY_HARD, 
+            api_secret=API_SECRET_HARD,
+            recv_window=5000
+        )
     
     # 디버깅 정보 출력
     log.info(f"Initializing trading client...")
@@ -311,3 +320,4 @@ if __name__ == "__main__":
     print(f"Ready to receive webhooks!")
     
     app.run(host="0.0.0.0", port=port)
+
