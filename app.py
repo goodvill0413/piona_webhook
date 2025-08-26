@@ -33,7 +33,7 @@ def get_trading_client():
     # 하드코딩된 새 API 키 사용
     API_KEY_NEW = "s50OTiRy6693Rrfjfn"            
     API_SECRET_NEW = "ArlYHlzcr4cTV8Cd8xc8iAe57A3ZMvAe0C2J"
-    
+                    
     # 디버깅 정보 출력
     log.info("Initializing trading client...")
     log.info(f"API_KEY length: {len(API_KEY_NEW)}")
@@ -290,4 +290,5 @@ if __name__ == "__main__":
     print(f"Ready to receive webhooks!")
     
     app.run(host="0.0.0.0", port=port)
+
 
