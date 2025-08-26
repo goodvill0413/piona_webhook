@@ -34,29 +34,20 @@ def get_trading_client():
     API_KEY_HARD = "LX7qZly2dlK5UbIOvv"
     API_SECRET_HARD = "PdhkzxFnL1AjSl9gv88JdU3VHa4P1YPwpjAU"
     
-    try:
-        from pybit.unified_trading import HTTP
-        client = HTTP(
-            testnet=True, 
-            api_key=API_KEY_HARD, 
-            api_secret=API_SECRET_HARD,
-            recv_window=5000
-        )
-    
     # 디버깅 정보 출력
     log.info(f"Initializing trading client...")
-    log.info(f"API_KEY length: {len(API_KEY) if API_KEY else 0}")
-    log.info(f"API_SECRET length: {len(API_SECRET) if API_SECRET else 0}")
+    log.info(f"API_KEY length: {len(API_KEY_HARD)}")
+    log.info(f"API_SECRET length: {len(API_SECRET_HARD)}")
     log.info(f"TESTNET mode: {IS_TESTNET}")
-    log.info(f"API_KEY starts with: {API_KEY[:8]}..." if API_KEY else "None")
+    log.info(f"API_KEY starts with: {API_KEY_HARD[:8]}...")
     
     try:
         from pybit.unified_trading import HTTP
         client = HTTP(
             testnet=IS_TESTNET, 
-            api_key=API_KEY, 
-            api_secret=API_SECRET,
-            recv_window=5000  # 5초 여유시간
+            api_key=API_KEY_HARD, 
+            api_secret=API_SECRET_HARD,
+            recv_window=5000
         )
         
         # 간단한 API 호출로 연결 테스트
@@ -70,7 +61,6 @@ def get_trading_client():
         
     except Exception as e:
         log.error(f"Failed to initialize trading client: {e}")
-        # API 에러의 경우 더 자세한 정보 출력
         if hasattr(e, 'response'):
             log.error(f"API Response: {e.response}")
         return None
@@ -93,7 +83,7 @@ def execute_buy_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> Dict[str, 
             side="Buy",
             orderType="Market",
             qty=str(qty),
-            timeInForce="IOC"  # Immediate or Cancel
+            timeInForce="IOC"
         )
         
         # 결과 로깅
@@ -320,4 +310,3 @@ if __name__ == "__main__":
     print(f"Ready to receive webhooks!")
     
     app.run(host="0.0.0.0", port=port)
-
