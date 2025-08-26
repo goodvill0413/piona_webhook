@@ -30,23 +30,23 @@ def get_trading_client():
     if client is not None:
         return client
         
-    # 하드코딩 테스트
-    API_KEY = "s50OTiRy6693Rrfjfn"
-    API_SECRET = "ArlYHlzcr4cTV8Cd8xc8iAe57A3ZMvAe0C2J"
+    # 하드코딩된 새 API 키 사용
+    API_KEY_NEW = "s500TiRy6693RfrJfn"
+    API_SECRET_NEW = "ArlYHlzcr4cTV8Cd8xc8iAe57A3ZMvAe0C2J"
     
     # 디버깅 정보 출력
-    log.info(f"Initializing trading client...")
-    log.info(f"API_KEY length: {len(API_KEY)}")
-    log.info(f"API_SECRET length: {len(API_SECRET)}")
+    log.info("Initializing trading client...")
+    log.info(f"API_KEY length: {len(API_KEY_NEW)}")
+    log.info(f"API_SECRET length: {len(API_SECRET_NEW)}")
     log.info(f"TESTNET mode: {IS_TESTNET}")
-    log.info(f"API_KEY starts with: {API_KEY)[:8]}...")
+    log.info("API_KEY starts with: " + API_KEY_NEW[:8] + "...")
     
     try:
         from pybit.unified_trading import HTTP
         client = HTTP(
             testnet=IS_TESTNET, 
-            api_key=API_KEY, 
-            api_secret=API_SECRET,
+            api_key=API_KEY_NEW, 
+            api_secret=API_SECRET_NEW,
             recv_window=5000
         )
         
@@ -61,8 +61,6 @@ def get_trading_client():
         
     except Exception as e:
         log.error(f"Failed to initialize trading client: {e}")
-        if hasattr(e, 'response'):
-            log.error(f"API Response: {e.response}")
         return None
 
 # ---------------------------
@@ -97,8 +95,6 @@ def execute_buy_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> Dict[str, 
         
     except Exception as e:
         log.error(f"BUY order exception: {e}")
-        if hasattr(e, 'response'):
-            log.error(f"Full API response: {e.response}")
         return {"status": "error", "message": str(e)}
 
 def execute_sell_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> Dict[str, Any]:
@@ -129,8 +125,6 @@ def execute_sell_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> Dict[str,
         
     except Exception as e:
         log.error(f"SELL order exception: {e}")
-        if hasattr(e, 'response'):
-            log.error(f"Full API response: {e.response}")
         return {"status": "error", "message": str(e)}
 
 def close_positions(symbol: str = "BTCUSDT") -> Dict[str, Any]:
@@ -185,8 +179,6 @@ def close_positions(symbol: str = "BTCUSDT") -> Dict[str, Any]:
         
     except Exception as e:
         log.error(f"Close position exception: {e}")
-        if hasattr(e, 'response'):
-            log.error(f"Full API response: {e.response}")
         return {"status": "error", "message": str(e)}
 
 # ---------------------------
@@ -310,5 +302,4 @@ if __name__ == "__main__":
     print(f"Ready to receive webhooks!")
     
     app.run(host="0.0.0.0", port=port)
-
 
