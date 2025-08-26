@@ -146,12 +146,19 @@ def index():
 def health():
     return {"status": "healthy", "testnet": IS_TESTNET}
 
+@app.route("/test", methods=['GET'])
+def test():
+    print("=== 테스트 엔드포인트 호출됨! ===")
+    return "서버 작동 중!"
+
 @app.route("/webhook", methods=['POST'])
 def webhook():
-    print("=== Webhook received ===")           # 이 줄 추가
-    print(f"Headers: {dict(request.headers)}")  # 이 줄 추가  
-    print(f"Data: {request.get_data()}")        # 이 줄 추가
-    print(f"JSON: {request.get_json()}")        # 이 줄 추가    """메인 웹훅 핸들러: 모든 TradingView 알림을 받아 처리합니다."""
+    """메인 웹훅 핸들러: 모든 TradingView 알림을 받아 처리합니다."""
+    print("=== Webhook received ===")
+    print(f"Headers: {dict(request.headers)}")
+    print(f"Data: {request.get_data()}")
+    print(f"JSON: {request.get_json()}")
+    
     try:
         payload = None
         raw_data = None
@@ -205,6 +212,11 @@ def webhook():
         elif payload and action in ["time_exit", "emergency_close"]:
             response_data = close_position(payload)
             
+        # 테스트용 액션 추가
+        elif action == "test":
+            log.info("🧪 Test action received - no trading executed")
+            response_data = {"status": "test_success", "message": "Test webhook received successfully"}
+            
         else:
             log.warning(f"⚠️ Unhandled action: '{action}'. Data: {payload or raw_data}")
             return {"status": "ok", "message": f"Action '{action}' logged but not processed"}, 200
@@ -227,4 +239,3 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
