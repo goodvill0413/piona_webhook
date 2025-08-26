@@ -98,6 +98,8 @@ def execute_buy_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> Dict[str, 
         
     except Exception as e:
         log.error(f"BUY order exception: {e}")
+    if hasattr(e, 'response'):
+        log.error(f"Full API response: {e.response}")        
         return {"status": "error", "message": str(e)}
 
 def execute_sell_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> Dict[str, Any]:
@@ -305,3 +307,4 @@ if __name__ == "__main__":
     print(f"Ready to receive webhooks!")
     
     app.run(host="0.0.0.0", port=port)
+
