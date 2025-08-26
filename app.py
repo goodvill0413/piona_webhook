@@ -36,17 +36,17 @@ def get_trading_client():
     
     # 디버깅 정보 출력
     log.info(f"Initializing trading client...")
-    log.info(f"API_KEY length: {len(API_KEY_HARD)}")
-    log.info(f"API_SECRET length: {len(API_SECRET_HARD)}")
+    log.info(f"API_KEY length: {len(API_KEY)}")
+    log.info(f"API_SECRET length: {len(API_SECRET)}")
     log.info(f"TESTNET mode: {IS_TESTNET}")
-    log.info(f"API_KEY starts with: {API_KEY_HARD[:8]}...")
+    log.info(f"API_KEY starts with: {API_KEY)[:8]}...")
     
     try:
         from pybit.unified_trading import HTTP
         client = HTTP(
             testnet=IS_TESTNET, 
-            api_key=API_KEY_HARD, 
-            api_secret=API_SECRET_HARD,
+            api_key=API_KEY, 
+            api_secret=API_SECRET,
             recv_window=5000
         )
         
@@ -310,4 +310,5 @@ if __name__ == "__main__":
     print(f"Ready to receive webhooks!")
     
     app.run(host="0.0.0.0", port=port)
+
 
