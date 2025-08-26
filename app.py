@@ -148,7 +148,10 @@ def health():
 
 @app.route("/webhook", methods=['POST'])
 def webhook():
-    """메인 웹훅 핸들러: 모든 TradingView 알림을 받아 처리합니다."""
+    print("=== Webhook received ===")           # 이 줄 추가
+    print(f"Headers: {dict(request.headers)}")  # 이 줄 추가  
+    print(f"Data: {request.get_data()}")        # 이 줄 추가
+    print(f"JSON: {request.get_json()}")        # 이 줄 추가    """메인 웹훅 핸들러: 모든 TradingView 알림을 받아 처리합니다."""
     try:
         payload = None
         raw_data = None
@@ -224,3 +227,4 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
