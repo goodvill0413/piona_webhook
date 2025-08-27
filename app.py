@@ -131,7 +131,7 @@ def close_positions(symbol: str = "BTCUSDT") -> dict:
         
         if not pos_list:
             log.info(f"No positions found for {symbol}")
-            return {"status": "no_position", "message": f"No positions for {symbol}"}
+            return {"status": "no_position", "message": f"No open position for {symbol}"}
         
         pos = pos_list[0]
         size = float(pos.get("size", 0))
@@ -139,7 +139,7 @@ def close_positions(symbol: str = "BTCUSDT") -> dict:
         
         if size <= 0:
             log.info(f"No open position for {symbol}")
-            return {"status": "no_position", "message": f"No open position for {symbol}")
+            return {"status": "no_position", "message": f"No open position for {symbol}"}
 
         close_side = "Sell" if side == "Buy" else "Buy"
         log.info(f"Closing {side} position: {size} {symbol}")
@@ -261,8 +261,4 @@ if __name__ == "__main__":
     client = get_trading_client()  # 초기화
     log.info(f"Ready to receive webhooks!")
     app.run(host="0.0.0.0", port=port)
-
-
-
-
 
