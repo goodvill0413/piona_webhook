@@ -287,9 +287,13 @@ if __name__ == "__main__":
     print(f"Server port: {port}")
     print(f"API configured: True")
     print(f"Trading mode: {'TESTNET' if IS_TESTNET else 'LIVE'}")
-    print(f"Ready to receive webhooks!")
     
+    # 서버 시작할 때 API 연결 테스트
+    client = get_trading_client()  # 이 줄 추가!
+    
+    print(f"Ready to receive webhooks!")
     app.run(host="0.0.0.0", port=port)
+
 
 
 
