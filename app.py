@@ -1,169 +1,213 @@
+# app.py
 from flask import Flask, request, jsonify
 from pybit.unified_trading import HTTP
 import os
 import time
 import logging
 
-# 로깅 설정
+# ---------------------------
+# Logging
+# ---------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("piona-webhook")
 
+# ---------------------------
+# Flask
+# ---------------------------
 app = Flask(__name__)
 
-# 환경 변수 사용
+# ---------------------------
+# Env
+# ---------------------------
 API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("API_SECRET")
 IS_TESTNET = os.getenv("TESTNET", "true").lower() in ("1", "true", "yes")
 
-# 전역 변수
+# ---------------------------
+# Globals
+# ---------------------------
 client = None
 trading_enabled = False
 
+
+# ---------------------------
+# Utils
+# ---------------------------
+def _fmt_qty(q) -> str:
+    """Qty formatted to 0.001 step (safe default for BTCUSDT)."""
+    try:
+        qf = float(q)
+    except Exception:
+        qf = 0.001
+    qf = max(round(qf, 3), 0.001)
+    return f"{qf:.3f}"
+
+
 def get_trading_client():
-    """거래 클라이언트를 가져옵니다 (지연 로딩)"""
+    """Lazy-init Bybit client."""
     global client, trading_enabled
-    
+
     if client is not None:
         return client
-        
+
     if not API_KEY or not API_SECRET:
-        log.error("API key or secret not set in environment variables")
+        log.error("API key/secret not set in environment variables")
         return None
-        
+
     log.info("Initializing trading client...")
-    log.info(f"TESTNET mode: {IS_TESTNET}")
+    log.info(f"TESTNET: {IS_TESTNET}")
     log.info(f"API_KEY starts with: {API_KEY[:8]}...")
 
     try:
-        # 시간 동기화 테스트
-        server_time = HTTP(testnet=IS_TESTNET).get_server_time()
-        local_time = int(time.time() * 1000)
-        time_diff = abs(server_time.get('result', {}).get('timeNano') / 1000000 - local_time)
-        if time_diff > 5000:  # 5초 이상 차이 시 경고
-            log.warning(f"Time difference with server: {time_diff}ms")
+        # Basic time sanity check (no auth)
+        tmp = HTTP(testnet=IS_TESTNET)
+        st = tmp.get_server_time()
+        server_ms = int(st.get("result", {}).get("timeNano", 0) / 1_000_000)
+        local_ms = int(time.time() * 1000)
+        if server_ms and abs(server_ms - local_ms) > 5000:
+            log.warning(f"Time difference with server: {abs(server_ms - local_ms)}ms")
 
-        client = HTTP(
+        # Authenticated session
+        c = HTTP(
             testnet=IS_TESTNET,
             api_key=API_KEY,
             api_secret=API_SECRET,
-            recv_window=5000
+            recv_window=10_000,
         )
-        
-        # 연결 테스트
-        test_result = client.get_server_time()
-        log.info(f"API connection test successful: {test_result.get('result', {}).get('timeSecond', 'unknown')}")
+
+        # Connection test (auth not strictly required, but ensures headers ok)
+        test = c.get_server_time()
+        log.info(f"API connection OK. server time (s): {test.get('result', {}).get('timeSecond', 'unknown')}")
+
+        client = c
         trading_enabled = True
-        log.info(f"Trading client initialized successfully (testnet: {IS_TESTNET})")
+        log.info(f"Trading client ready. (testnet={IS_TESTNET})")
         return client
+
     except Exception as e:
-        log.error(f"Failed to initialize trading client: {e}")
+        log.error(f"Client init failed: {e}")
         return None
 
+
+@app.before_request
+def _ensure_client():
+    """Make sure client exists before any request handling."""
+    global client, trading_enabled
+    if client is None:
+        c = get_trading_client()
+        trading_enabled = c is not None
+
+
+# ---------------------------
+# Trading ops
+# ---------------------------
 def execute_buy_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> dict:
-    """매수 주문 실행"""
-    client = get_trading_client()
-    if not client:
+    c = get_trading_client()
+    if not c:
         return {"status": "error", "message": "Trading client not available"}
-    
-    qty = max(round(qty, 3), 0.001)  # 최소 0.001, 3자리 반올림
-    log.info(f"Executing BUY: {qty} {symbol}")
+
+    q = _fmt_qty(qty)
+    log.info(f"BUY {symbol} {q}")
     try:
-        result = client.place_order(
+        r = c.place_order(
             category="linear",
             symbol=symbol,
             side="Buy",
             orderType="Market",
-            qty=str(qty),
-            timeInForce="IOC"
+            qty=q,  # Market 주문은 timeInForce 불필요
         )
-        if result.get("retCode") == 0:
-            order_id = result.get("result", {}).get("orderId", "unknown")
-            log.info(f"BUY order successful - Order ID: {order_id}")
+        if r.get("retCode") == 0:
+            oid = r.get("result", {}).get("orderId", "unknown")
+            log.info(f"BUY success - orderId={oid}")
+            return {"status": "success", "data": r}
         else:
-            log.error(f"BUY order failed - Code: {result.get('retCode')}, Msg: {result.get('retMsg')}")
-        return {"status": "success", "data": result}
+            log.error(f"BUY failed - code={r.get('retCode')} msg={r.get('retMsg')}")
+            return {"status": "error", "data": r, "message": r.get("retMsg")}
     except Exception as e:
-        log.error(f"BUY order exception: {e}")
+        log.error(f"BUY exception: {e}")
         return {"status": "error", "message": str(e)}
 
+
 def execute_sell_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> dict:
-    """매도 주문 실행"""
-    client = get_trading_client()
-    if not client:
+    c = get_trading_client()
+    if not c:
         return {"status": "error", "message": "Trading client not available"}
-    
-    qty = max(round(qty, 3), 0.001)  # 최소 0.001, 3자리 반올림
-    log.info(f"Executing SELL: {qty} {symbol}")
+
+    q = _fmt_qty(qty)
+    log.info(f"SELL {symbol} {q}")
     try:
-        result = client.place_order(
+        r = c.place_order(
             category="linear",
             symbol=symbol,
             side="Sell",
             orderType="Market",
-            qty=str(qty),
-            timeInForce="IOC"
+            qty=q,
         )
-        if result.get("retCode") == 0:
-            order_id = result.get("result", {}).get("orderId", "unknown")
-            log.info(f"SELL order successful - Order ID: {order_id}")
+        if r.get("retCode") == 0:
+            oid = r.get("result", {}).get("orderId", "unknown")
+            log.info(f"SELL success - orderId={oid}")
+            return {"status": "success", "data": r}
         else:
-            log.error(f"SELL order failed - Code: {result.get('retCode')}, Msg: {result.get('retMsg')}")
-        return {"status": "success", "data": result}
+            log.error(f"SELL failed - code={r.get('retCode')} msg={r.get('retMsg')}")
+            return {"status": "error", "data": r, "message": r.get("retMsg")}
     except Exception as e:
-        log.error(f"SELL order exception: {e}")
+        log.error(f"SELL exception: {e}")
         return {"status": "error", "message": str(e)}
+
 
 def close_positions(symbol: str = "BTCUSDT") -> dict:
-    """포지션 종료"""
-    client = get_trading_client()
-    if not client:
+    """Close all open positions (hedge or one-way)."""
+    c = get_trading_client()
+    if not c:
         return {"status": "error", "message": "Trading client not available"}
-    
+
     try:
-        log.info(f"Checking positions for {symbol}")
-        positions = client.get_positions(category="linear", symbol=symbol)
-        
-        if positions.get("retCode") != 0:
-            log.error(f"Failed to get positions: {positions.get('retMsg')}")
-            return {"status": "error", "message": positions.get('retMsg')}
-            
-        pos_list = positions.get("result", {}).get("list", [])
-        
-        if not pos_list:
-            log.info(f"No positions found for {symbol}")
-            return {"status": "no_position", "message": f"No open position for {symbol}"}
-        
-        pos = pos_list[0]
-        size = float(pos.get("size", 0))
-        side = pos.get("side")
-        
-        if size <= 0:
-            log.info(f"No open position for {symbol}")
+        log.info(f"Closing positions for {symbol}")
+        pos = c.get_positions(category="linear", symbol=symbol)
+        if pos.get("retCode") != 0:
+            msg = pos.get("retMsg")
+            log.error(f"Get positions failed: {msg}")
+            return {"status": "error", "message": msg}
+
+        lst = pos.get("result", {}).get("list", []) or []
+        if not lst:
+            log.info("No open positions")
             return {"status": "no_position", "message": f"No open position for {symbol}"}
 
-        close_side = "Sell" if side == "Buy" else "Buy"
-        log.info(f"Closing {side} position: {size} {symbol}")
-        
-        result = client.place_order(
-            category="linear",
-            symbol=symbol,
-            side=close_side,
-            orderType="Market",
-            qty=str(size),
-            reduceOnly=True,
-            timeInForce="IOC"
-        )
-        
-        if result.get("retCode") == 0:
-            order_id = result.get("result", {}).get("orderId", "unknown")
-            log.info(f"Close position successful - Order ID: {order_id}")
-        else:
-            log.error(f"Close position failed - Code: {result.get('retCode')}, Msg: {result.get('retMsg')}")
-        return {"status": "success", "data": result}
+        results = []
+        for p in lst:
+            size = float(p.get("size") or 0)
+            if size <= 0:
+                continue
+
+            side = p.get("side")  # "Buy" or "Sell"
+            close_side = "Sell" if side == "Buy" else "Buy"
+            position_idx = p.get("positionIdx", 1)  # 1=one-way, 2=long, 3=short
+
+            log.info(f"Close {side} {symbol} size={size} positionIdx={position_idx}")
+            r = c.place_order(
+                category="linear",
+                symbol=symbol,
+                side=close_side,
+                orderType="Market",
+                qty=_fmt_qty(size),
+                reduceOnly=True,
+                positionIdx=position_idx,
+            )
+            results.append(r)
+
+        if not results:
+            return {"status": "no_position", "message": f"No open position for {symbol}"}
+        return {"status": "success", "data": results}
+
     except Exception as e:
-        log.error(f"Close position exception: {e}")
+        log.error(f"Close exception: {e}")
         return {"status": "error", "message": str(e)}
 
+
+# ---------------------------
+# Routes
+# ---------------------------
 @app.route("/")
 def index():
     return {
@@ -172,93 +216,115 @@ def index():
         "trading_mode": "testnet" if IS_TESTNET else "live",
         "api_configured": bool(API_KEY and API_SECRET),
         "trading_ready": trading_enabled,
-        "version": "1.0.0"
+        "version": "1.1.0",
     }
+
 
 @app.route("/health")
 def health():
     return {
-        "status": "healthy",
+        "status": "healthy" if trading_enabled else "degraded",
         "trading_client": "ready" if trading_enabled else "not_initialized",
-        "testnet": IS_TESTNET
+        "testnet": IS_TESTNET,
     }
+
 
 @app.route("/debug")
 def debug():
-    """디버깅 정보 확인용"""
     return {
         "api_key_set": bool(API_KEY),
         "api_secret_set": bool(API_SECRET),
         "testnet": IS_TESTNET,
         "trading_enabled": trading_enabled,
-        "client_initialized": client is not None
+        "client_initialized": client is not None,
     }
 
-@app.route("/webhook", methods=['POST'])
-def webhook():
-    """웹훅 핸들러"""
-    log.info("=== Webhook received ===")
-    log.info(f"Headers: {dict(request.headers)}")
-    log.info(f"Data: {request.get_data()}")
-    
+
+@app.route("/balance")
+def balance():
+    c = get_trading_client()
+    if not c:
+        return {"status": "error", "message": "client not ready"}, 500
     try:
-        data = request.get_json()
+        # Unified account is default on Bybit now
+        return c.get_wallet_balance(accountType="UNIFIED")
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
+
+@app.route("/positions")
+def positions():
+    c = get_trading_client()
+    if not c:
+        return {"status": "error", "message": "client not ready"}, 500
+    try:
+        symbol = request.args.get("symbol", "BTCUSDT").upper().strip()
+        return c.get_positions(category="linear", symbol=symbol)
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    log.info("=== Webhook received ===")
+    try:
+        data = request.get_json(silent=True) or {}
+        action = str(data.get("action", "")).lower().strip()
+        symbol = str(data.get("symbol", "BTCUSDT")).upper().strip()
+        qty = data.get("qty", 0.001)
+
+        log.info(f"Headers: {dict(request.headers)}")
         log.info(f"JSON: {data}")
-        
-        if not data:
-            log.warning("No JSON data received")
-            return jsonify({"status": "error", "message": "No JSON data"}), 400
-        
-        action = data.get("action", "").lower().strip()
-        symbol = data.get("symbol", "BTCUSDT").upper().strip()
-        qty = max(round(float(data.get("qty", 0.001)), 3), 0.001)  # 최소 0.001, 3자리 반올림
-        
-        log.info(f"Processing: {action} {symbol} {qty}")
-        
+        log.info(f"Process: action={action} symbol={symbol} qty={qty}")
+
         if action == "test":
-            log.info("TEST action - no trading")
             return jsonify({
                 "status": "success",
-                "action": action,
-                "message": "Test webhook processed successfully",
-                "trading_available": True,
+                "message": "test ok",
                 "trading_ready": trading_enabled
-            })
-        
-        result = {}
-        if action in ["buy", "long"]:
+            }), 200
+
+        if action in ("buy", "long"):
             result = execute_buy_order(symbol, qty)
-        elif action in ["sell", "short"]:
+        elif action in ("sell", "short"):
             result = execute_sell_order(symbol, qty)
-        elif action in ["close", "exit", "stop"]:
+        elif action in ("close", "exit", "stop"):
             result = close_positions(symbol)
         else:
-            log.warning(f"Unknown action: {action}")
             return jsonify({
                 "status": "error",
                 "message": f"Unknown action: {action}",
-                "supported_actions": ["buy", "long", "sell", "short", "close", "exit", "stop", "test"]
+                "supported": ["buy","long","sell","short","close","exit","stop","test"]
             }), 400
-        
-        return jsonify({
-            "status": "success",
+
+        ok = isinstance(result, dict) and result.get("status") == "success"
+        resp = {
+            "status": "success" if ok else "error",
             "action": action,
             "symbol": symbol,
-            "qty": qty,
+            "qty": _fmt_qty(qty),
             "result": result,
-            "timestamp": data.get("timestamp", "not_provided")
-        })
+            "timestamp": data.get("timestamp", "not_provided"),
+        }
+        return (jsonify(resp), 200) if ok else (jsonify(resp), 500)
+
     except Exception as e:
         log.error(f"Webhook error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+
+# ---------------------------
+# Main
+# ---------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    log.info(f"Starting Piona Trading Bot...")
+    log.info("Starting Piona Trading Bot...")
     log.info(f"Server port: {port}")
     log.info(f"API configured: {bool(API_KEY and API_SECRET)}")
     log.info(f"Trading mode: {'TESTNET' if IS_TESTNET else 'LIVE'}")
-    client = get_trading_client()  # 초기화
-    log.info(f"Ready to receive webhooks!")
+    client = get_trading_client()
+    log.info("Ready to receive webhooks!")
     app.run(host="0.0.0.0", port=port)
+
+
 
