@@ -280,7 +280,7 @@ def webhook():
 # ---------------------------
 # Startup
 # ---------------------------
-  client = get_trading_client()  # 이 줄 추가!
+client = get_trading_client()  # 이 줄 추가!
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
@@ -293,6 +293,7 @@ if __name__ == "__main__":
     
     print(f"Ready to receive webhooks!")
     app.run(host="0.0.0.0", port=port)
+
 
 
 
