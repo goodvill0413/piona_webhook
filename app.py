@@ -59,15 +59,29 @@ def get_trading_client():
     log.info(f"API_KEY starts with: {API_KEY[:8]}...")
 
     try:
-        # Basic time sanity check (no auth)
+        # -------- Server time sanity check (handles string/number formats) --------
         tmp = HTTP(testnet=IS_TESTNET)
         st = tmp.get_server_time()
-        server_ms = int(st.get("result", {}).get("timeNano", 0) / 1_000_000)
+        r = st.get("result", {}) if isinstance(st, dict) else {}
+
+        def _to_int_ms(val, scale=1):
+            try:
+                return int(float(val) * scale)
+            except Exception:
+                return 0
+
+        if "timeNano" in r:
+            server_ms = _to_int_ms(r.get("timeNano"), 1 / 1_000_000)  # ns -> ms
+        elif "timeSecond" in r:
+            server_ms = _to_int_ms(r.get("timeSecond"), 1000)          # s  -> ms
+        else:
+            server_ms = 0
+
         local_ms = int(time.time() * 1000)
         if server_ms and abs(server_ms - local_ms) > 5000:
             log.warning(f"Time difference with server: {abs(server_ms - local_ms)}ms")
 
-        # Authenticated session
+        # -------- Authenticated session --------
         c = HTTP(
             testnet=IS_TESTNET,
             api_key=API_KEY,
@@ -75,7 +89,6 @@ def get_trading_client():
             recv_window=10_000,
         )
 
-        # Connection test (auth not strictly required, but ensures headers ok)
         test = c.get_server_time()
         log.info(f"API connection OK. server time (s): {test.get('result', {}).get('timeSecond', 'unknown')}")
 
@@ -114,7 +127,7 @@ def execute_buy_order(symbol: str = "BTCUSDT", qty: float = 0.001) -> dict:
             symbol=symbol,
             side="Buy",
             orderType="Market",
-            qty=q,  # Market 주문은 timeInForce 불필요
+            qty=q,   # Market 주문은 timeInForce 불필요
         )
         if r.get("retCode") == 0:
             oid = r.get("result", {}).get("orderId", "unknown")
@@ -216,7 +229,7 @@ def index():
         "trading_mode": "testnet" if IS_TESTNET else "live",
         "api_configured": bool(API_KEY and API_SECRET),
         "trading_ready": trading_enabled,
-        "version": "1.1.0",
+        "version": "1.1.1",
     }
 
 
@@ -246,7 +259,6 @@ def balance():
     if not c:
         return {"status": "error", "message": "client not ready"}, 500
     try:
-        # Unified account is default on Bybit now
         return c.get_wallet_balance(accountType="UNIFIED")
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
@@ -325,6 +337,7 @@ if __name__ == "__main__":
     client = get_trading_client()
     log.info("Ready to receive webhooks!")
     app.run(host="0.0.0.0", port=port)
+
 
 
 
