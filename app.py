@@ -220,54 +220,48 @@ def parse_tradingview_webhook(data):
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """TradingView 웹훅 엔드포인트"""
     try:
-        if request.is_json:
-            webhook_data = request.get_json()
-        else:
-            webhook_data = request.get_data(as_text=True)
-        logger.info(f"웹훅 수신: {webhook_data}")
+        # 편지를 열어보기
+        letter = request.get_data(as_text=True)  # 편지 내용 읽기
+        if not letter or letter.strip() == "":
+            logger.info("빈 편지 왔어요!")
+            return jsonify({"status": "error", "message": "빈 편지"}), 400
+        
+        # 편지를 제대로 읽기
+        webhook_data = json.loads(letter)  # JSON으로 바꾸기
+        logger.info(f"받은 편지: {webhook_data}")
         parsed_data = parse_tradingview_webhook(webhook_data)
         if not parsed_data:
-            return jsonify({"status": "error", "message": "잘못된 웹훅 데이터"}), 400
+            return jsonify({"status": "error", "message": "잘못된 편지"}), 400
+        
+        # 토큰 확인
         if not validate_webhook_token(parsed_data['token']):
-            logger.warning("유효하지 않은 토큰으로 웹훅 요청")
-            return jsonify({"status": "error", "message": "유효하지 않은 토큰"}), 403
+            logger.warning("토큰이 이상해요!")
+            return jsonify({"status": "error", "message": "토큰 틀림"}), 403
+        
+        # 나머지 작업 (사기/팔기)
         action = parsed_data['action']
         symbol = parsed_data['symbol']
         quantity = float(parsed_data['quantity'])
         price = parsed_data.get('price')
         order_type = parsed_data['order_type']
-        logger.info(f"실행할 액션: {action}, 심볼: {symbol}, 수량: {quantity}")
+        logger.info(f"할 일: {action}, 코인: {symbol}, 수량: {quantity}")
         if action in ['buy', 'sell']:
-            result = trader.place_order(
-                symbol=symbol,
-                side=action,
-                amount=quantity,
-                price=price,
-                order_type=order_type
-            )
+            result = trader.place_order(symbol=symbol, side=action, amount=quantity, price=price, order_type=order_type)
         elif action == 'close':
             result = trader.close_position(symbol, 'both')
         else:
-            return jsonify({"status": "error", "message": f"지원하지 않는 액션: {action}"}), 400
+            return jsonify({"status": "error", "message": f"모르는 명령: {action}"}), 400
+        
         if result['code'] == '0':
-            logger.info(f"주문 성공: {result}")
-            return jsonify({
-                "status": "success",
-                "message": f"{action} 주문 실행 완료",
-                "data": result
-            })
+            logger.info(f"성공! {result}")
+            return jsonify({"status": "success", "message": f"{action} 완료!", "data": result})
         else:
-            logger.error(f"주문 실패: {result}")
-            return jsonify({
-                "status": "error",
-                "message": f"주문 실패: {result.get('msg', '알 수 없는 오류')}"
-            }), 500
+            logger.error(f"실패! {result}")
+            return jsonify({"status": "error", "message": f"실패: {result.get('msg', '몰라!')}"}), 500
     except Exception as e:
-        logger.error(f"웹훅 처리 오류: {e}")
+        logger.error(f"문제 생겼어요: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
-
 @app.route('/status', methods=['GET'])
 def status():
     """서버 상태 확인"""
@@ -324,4 +318,5 @@ if __name__ == '__main__':
         print(f"단위(Lot Size): {info['lotSz']}")
     
     # 웹서버 시작
+
     app.run(host='0.0.0.0', port=5000, debug=True)
