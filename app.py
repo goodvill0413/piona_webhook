@@ -9,20 +9,15 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import logging
-
 # SSL 경고 숨기기
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 # 환경변수 로드
 load_dotenv()
-
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
 app = Flask(__name__)
-
 class OKXTrader:
     def __init__(self):
         self.api_key = os.getenv('OKX_API_KEY')
@@ -33,10 +28,8 @@ class OKXTrader:
         self.default_tdmode = os.getenv('DEFAULT_TDMODE', 'cross')
         self.default_market = os.getenv('DEFAULT_MARKET', 'swap')
         logger.info(f"OKXTrader 초기화 - 시뮬레이션 모드: {self.simulated}, 마켓: {self.default_market}")
-
     def get_timestamp(self):
         return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
-
     def sign_request(self, method, path, body=""):
         timestamp = self.get_timestamp()
         message = timestamp + method + path + body
@@ -51,7 +44,6 @@ class OKXTrader:
             'Content-Type': 'application/json',
             'x-simulated-trading': self.simulated
         }
-
     def get_instrument_info(self, symbol):
         """코인의 주문 규칙을 알아내는 함수"""
         try:
@@ -60,16 +52,36 @@ class OKXTrader:
                 verify=False,
                 timeout=5
             )
+            # 빈 응답이나 오류 체크 추가!
+            if response.text.strip() == "":
+                logger.warning(f"빈 응답 받음: {symbol}. 기본 규칙 사용!")
+                return {
+                    'minSz': '0.001',  # 기본 최소 수량 (BTC-SWAP 기준)
+                    'lotSz': '0.001'   # 기본 단위
+                }
             data = response.json()
             if data['code'] == '0' and data.get('data'):
                 logger.info(f"심볼 정보 조회 성공: {symbol}, minSz={data['data'][0]['minSz']}, lotSz={data['data'][0]['lotSz']}")
                 return data['data'][0]
             logger.error(f"심볼 정보 조회 실패: {data}")
-            return None
+            # 실패해도 기본값 반환 (주문 계속 진행)
+            logger.warning(f"조회 실패로 기본 규칙 사용: {symbol}")
+            return {
+                'minSz': '0.001',
+                'lotSz': '0.001'
+            }
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON 파싱 오류 (빈 응답?): {e}")
+            return {
+                'minSz': '0.001',
+                'lotSz': '0.001'
+            }
         except Exception as e:
             logger.error(f"심볼 정보 조회 오류: {e}")
-            return None
-
+            return {
+                'minSz': '0.001',
+                'lotSz': '0.001'
+            }
     def get_ticker(self, symbol):
         """현재가 조회"""
         try:
@@ -86,7 +98,6 @@ class OKXTrader:
         except Exception as e:
             logger.error(f"가격 조회 오류: {e}")
             return None
-
     def get_positions(self, symbol=None):
         """포지션 조회"""
         method = "GET"
@@ -105,7 +116,6 @@ class OKXTrader:
         except Exception as e:
             logger.error(f"포지션 조회 오류: {e}")
             return {"code": "error", "msg": str(e)}
-
     def close_position(self, symbol, side):
         """포지션 청산"""
         positions = self.get_positions(symbol)
@@ -125,7 +135,6 @@ class OKXTrader:
                     td_mode=pos.get('mgnMode', self.default_tdmode)
                 )
         return {"code": "0", "msg": "청산할 포지션이 없습니다"}
-
     def place_order(self, symbol, side, amount, price=None, order_type="market", td_mode=None):
         """주문 실행"""
         # 심볼 정보 조회
@@ -133,10 +142,10 @@ class OKXTrader:
         if not instrument_info:
             logger.error(f"주문 실패: {symbol} 심볼 정보 조회 실패")
             return {"code": "error", "msg": "심볼 정보 조회 실패"}
-        
+       
         lot_size = float(instrument_info['lotSz'])
         min_size = float(instrument_info['minSz'])
-        
+       
         # 수량 검증
         if amount < min_size:
             logger.error(f"주문 수량({amount})이 최소 수량({min_size}) 미만입니다")
@@ -145,7 +154,7 @@ class OKXTrader:
             adjusted_amount = round(amount / lot_size) * lot_size
             logger.warning(f"수량({amount})이 lot size({lot_size})의 배수가 아님. 조정된 수량: {adjusted_amount}")
             amount = adjusted_amount
-        
+       
         method = "POST"
         path = "/api/v5/trade/order"
         if td_mode is None:
@@ -176,12 +185,10 @@ class OKXTrader:
         except Exception as e:
             logger.error(f"주문 실행 오류: {e}")
             return {"code": "error", "msg": str(e)}
-
 def validate_webhook_token(token):
     """웹훅 토큰 검증"""
-    expected_token = os.getenv('WEBHOOK_TOKEN', 'change-me')
-    return token == expected_token and token != 'change-me'
-
+    expected_token = os.getenv('WEBHOOK_TOKEN', 'piona0413')  # 기본값을 'piona0413'으로 설정
+    return token == expected_token
 def parse_tradingview_webhook(data):
     """TradingView 웹훅 데이터 파싱"""
     try:
@@ -193,7 +200,7 @@ def parse_tradingview_webhook(data):
         for field in required_fields:
             if field not in webhook_data:
                 raise ValueError(f"필수 필드 누락: {field}")
-        
+       
         # 수량 검증
         trader = OKXTrader()
         instrument_info = trader.get_instrument_info(webhook_data['symbol'])
@@ -204,7 +211,7 @@ def parse_tradingview_webhook(data):
                 adjusted_quantity = round(quantity / lot_size) * lot_size
                 logger.warning(f"웹훅 수량({quantity})이 lot size({lot_size})의 배수가 아님. 조정된 수량: {adjusted_quantity}")
                 webhook_data['quantity'] = adjusted_quantity
-        
+       
         return {
             'action': webhook_data['action'].lower(),
             'symbol': webhook_data['symbol'],
@@ -217,9 +224,9 @@ def parse_tradingview_webhook(data):
     except Exception as e:
         logger.error(f"웹훅 데이터 파싱 오류: {e}")
         return None
-
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    """TradingView 웹훅 엔드포인트"""
     try:
         # 편지를 열어보기
         letter = request.get_data(as_text=True)  # 편지 내용 읽기
@@ -246,8 +253,15 @@ def webhook():
         price = parsed_data.get('price')
         order_type = parsed_data['order_type']
         logger.info(f"할 일: {action}, 코인: {symbol}, 수량: {quantity}")
+        trader = OKXTrader()  # trader 인스턴스 생성
         if action in ['buy', 'sell']:
-            result = trader.place_order(symbol=symbol, side=action, amount=quantity, price=price, order_type=order_type)
+            result = trader.place_order(
+                symbol=symbol,
+                side=action,
+                amount=quantity,
+                price=price,
+                order_type=order_type
+            )
         elif action == 'close':
             result = trader.close_position(symbol, 'both')
         else:
@@ -255,10 +269,17 @@ def webhook():
         
         if result['code'] == '0':
             logger.info(f"성공! {result}")
-            return jsonify({"status": "success", "message": f"{action} 완료!", "data": result})
+            return jsonify({
+                "status": "success",
+                "message": f"{action} 완료!",
+                "data": result
+            })
         else:
             logger.error(f"실패! {result}")
-            return jsonify({"status": "error", "message": f"실패: {result.get('msg', '몰라!')}"}), 500
+            return jsonify({
+                "status": "error",
+                "message": f"실패: {result.get('msg', '몰라!')}"
+            }), 500
     except Exception as e:
         logger.error(f"문제 생겼어요: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -271,20 +292,20 @@ def status():
         "market": trader.default_market,
         "simulated": trader.simulated == '1'
     })
-
 @app.route('/positions', methods=['GET'])
 def get_positions():
     """현재 포지션 조회"""
     try:
+        trader = OKXTrader()  # trader 인스턴스 생성
         positions = trader.get_positions()
         return jsonify(positions)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 @app.route('/balance', methods=['GET'])
 def get_balance():
     """잔고 조회"""
     try:
+        trader = OKXTrader()  # trader 인스턴스 생성
         method = "GET"
         path = "/api/v5/account/balance"
         headers = trader.sign_request(method, path)
@@ -297,11 +318,10 @@ def get_balance():
         return jsonify(response.json())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 if __name__ == '__main__':
     # 먼저 trader를 만들고
     trader = OKXTrader()
-    
+   
     print("=== TradingView → OKX 자동매매 시스템 시작 ===")
     print(f"시뮬레이션 모드: {trader.simulated == '1'}")
     print(f"기본 마켓: {trader.default_market}")
@@ -309,14 +329,13 @@ if __name__ == '__main__':
     print("웹훅 URL: http://localhost:5000/webhook")
     print("상태 확인: http://localhost:5000/status")
     print("=" * 50)
-    
+   
     # 테스트 코드
     print("=== 규칙 확인 테스트 ===")
     info = trader.get_instrument_info("BTC-USDT-SWAP")
     if info:
         print(f"최소 주문 수량: {info['minSz']}")
         print(f"단위(Lot Size): {info['lotSz']}")
-    
+   
     # 웹서버 시작
-
     app.run(host='0.0.0.0', port=5000, debug=True)
