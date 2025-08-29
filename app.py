@@ -66,6 +66,12 @@ class OKXTrader:
                 verify=False,
                 timeout=10
             )
+            
+            # 디버그: 실제 응답 확인
+            logger.info(f"OKX API 응답 코드: {response.status_code}")
+            logger.info(f"OKX API 응답 헤더: {dict(response.headers)}")
+            logger.info(f"OKX API 응답 내용: {response.text[:500]}")
+            
             # 빈 응답이나 오류 체크 추가!
             if response.text.strip() == "":
                 logger.warning(f"⚠️ 빈 응답 받음: {symbol}. 기본 규칙 사용!")
@@ -432,4 +438,5 @@ if __name__ == '__main__':
     
     # 웹서버 시작 - Render 배포용 설정
     app.run(host='0.0.0.0', port=port, debug=False)
+
 
