@@ -5,6 +5,7 @@ import hmac
 import base64
 import hashlib
 import requests
+import random
 from datetime import datetime
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
@@ -26,6 +27,89 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+# 무료 프록시 리스트 (주기적으로 업데이트 필요)
+FREE_PROXIES = [
+    "8.210.83.33:80",
+    "47.74.152.29:8888",
+    "43.134.68.153:3128",
+    "103.149.162.194:80",
+    "185.162.230.55:80",
+    "103.146.31.51:80",
+    "103.145.45.10:55443",
+    "192.111.139.162:4145"
+]
+
+def get_working_proxy():
+    """작동하는 프록시를 찾아 반환"""
+    proxies_to_try = random.sample(FREE_PROXIES, min(3, len(FREE_PROXIES)))
+    
+    for proxy in proxies_to_try:
+        try:
+            proxies = {
+                'http': f'http://{proxy}',
+                'https': f'http://{proxy}'
+            }
+            # 빠른 테스트
+            response = requests.get('http://httpbin.org/ip', proxies=proxies, timeout=5)
+            if response.status_code == 200:
+                logger.info(f"✅ 작동하는 프록시 발견: {proxy}")
+                return proxies
+        except:
+            continue
+    
+    logger.warning("⚠️ 작동하는 프록시를 찾지 못함. 직접 연결 시도")
+    return None
+
+def make_request_with_proxy(method, url, **kwargs):
+    """프록시를 사용해서 요청을 보내는 함수"""
+    # 먼저 프록시로 시도
+    proxy = get_working_proxy()
+    if proxy:
+        try:
+            kwargs['proxies'] = proxy
+            kwargs['timeout'] = kwargs.get('timeout', 15)
+            
+            if method.upper() == 'GET':
+                response = requests.get(url, **kwargs)
+            else:
+                response = requests.post(url, **kwargs)
+            
+            logger.info(f"✅ 프록시로 요청 성공: {response.status_code}")
+            return response
+        except Exception as e:
+            logger.warning(f"⚠️ 프록시 요청 실패: {e}")
+    
+    # 프록시 실패시 직접 연결
+    try:
+        kwargs.pop('proxies', None)  # 프록시 설정 제거
+        kwargs['timeout'] = kwargs.get('timeout', 10)
+        
+        # User-Agent 추가로 봇 탐지 회피
+        if 'headers' not in kwargs:
+            kwargs['headers'] = {}
+        kwargs['headers'].update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        })
+        
+        # 랜덤 지연 추가
+        time.sleep(random.uniform(1, 3))
+        
+        if method.upper() == 'GET':
+            response = requests.get(url, **kwargs)
+        else:
+            response = requests.post(url, **kwargs)
+        
+        logger.info(f"✅ 직접 연결로 요청 성공: {response.status_code}")
+        return response
+    except Exception as e:
+        logger.error(f"❌ 직접 연결도 실패: {e}")
+        raise
 
 class OKXTrader:
     def __init__(self):
@@ -61,62 +145,48 @@ class OKXTrader:
     def get_instrument_info(self, symbol):
         """코인의 주문 규칙을 알아내는 함수"""
         try:
-            response = requests.get(
+            response = make_request_with_proxy(
+                'GET',
                 f"{self.base_url}/api/v5/public/instruments?instType=SWAP&instId={symbol}",
-                verify=False,
-                timeout=10
+                verify=False
             )
             
             # 디버그: 실제 응답 확인
             logger.info(f"OKX API 응답 코드: {response.status_code}")
-            logger.info(f"OKX API 응답 헤더: {dict(response.headers)}")
-            logger.info(f"OKX API 응답 내용: {response.text[:500]}")
+            logger.info(f"OKX API 응답 내용: {response.text[:300]}")
             
-            # 빈 응답이나 오류 체크 추가!
             if response.text.strip() == "":
                 logger.warning(f"⚠️ 빈 응답 받음: {symbol}. 기본 규칙 사용!")
-                return {
-                    'minSz': '0.001',  # 기본 최소 수량 (BTC-SWAP 기준)
-                    'lotSz': '0.001'   # 기본 단위
-                }
+                return {'minSz': '0.001', 'lotSz': '0.001'}
+            
             data = response.json()
             if data['code'] == '0' and data.get('data'):
-                logger.info(f"✅ 심볼 정보 조회 성공: {symbol}, minSz={data['data'][0]['minSz']}, lotSz={data['data'][0]['lotSz']}")
+                logger.info(f"✅ 심볼 정보 조회 성공: {symbol}")
                 return data['data'][0]
-            logger.error(f"❌ 심볼 정보 조회 실패: {data}")
-            # 실패해도 기본값 반환 (주문 계속 진행)
+            
             logger.warning(f"⚠️ 조회 실패로 기본 규칙 사용: {symbol}")
-            return {
-                'minSz': '0.001',
-                'lotSz': '0.001'
-            }
+            return {'minSz': '0.001', 'lotSz': '0.001'}
+            
         except json.JSONDecodeError as e:
-            logger.error(f"❌ JSON 파싱 오류 (빈 응답?): {e}")
-            return {
-                'minSz': '0.001',
-                'lotSz': '0.001'
-            }
+            logger.error(f"❌ JSON 파싱 오류: {e}")
+            return {'minSz': '0.001', 'lotSz': '0.001'}
         except Exception as e:
             logger.error(f"❌ 심볼 정보 조회 오류: {e}")
-            return {
-                'minSz': '0.001',
-                'lotSz': '0.001'
-            }
+            return {'minSz': '0.001', 'lotSz': '0.001'}
 
     def get_ticker(self, symbol):
         """현재가 조회"""
         try:
-            response = requests.get(
+            response = make_request_with_proxy(
+                'GET',
                 f"{self.base_url}/api/v5/market/ticker?instId={symbol}",
-                verify=False,
-                timeout=10
+                verify=False
             )
             data = response.json()
             if data['code'] == '0' and data.get('data'):
                 price = float(data['data'][0]['last'])
                 logger.info(f"💰 {symbol} 현재가: {price}")
                 return price
-            logger.error(f"❌ 가격 조회 실패: {data}")
             return None
         except Exception as e:
             logger.error(f"❌ 가격 조회 오류: {e}")
@@ -130,14 +200,14 @@ class OKXTrader:
             path += f"?instId={symbol}"
         headers = self.sign_request(method, path)
         try:
-            response = requests.get(
+            response = make_request_with_proxy(
+                'GET',
                 self.base_url + path,
                 headers=headers,
-                verify=False,
-                timeout=10
+                verify=False
             )
             result = response.json()
-            logger.info(f"📊 포지션 조회 완료: {len(result.get('data', []))}개")
+            logger.info(f"📊 포지션 조회 완료")
             return result
         except Exception as e:
             logger.error(f"❌ 포지션 조회 오류: {e}")
@@ -171,7 +241,7 @@ class OKXTrader:
             logger.info("ℹ️ 청산할 포지션이 없습니다")
             return {"code": "0", "msg": "청산할 포지션이 없습니다"}
         
-        return {"code": "0", "data": closed_orders, "msg": f"{len(closed_orders)}개 포지션 청산 완료"}
+        return {"code": "0", "data": closed_orders}
 
     def place_order(self, symbol, side, amount, price=None, order_type="market", td_mode=None):
         """주문 실행"""
@@ -188,12 +258,12 @@ class OKXTrader:
         
         # 수량 검증
         if amount < min_size:
-            logger.error(f"❌ 주문 수량({amount})이 최소 수량({min_size}) 미만입니다")
+            logger.error(f"❌ 주문 수량({amount})이 최소 수량({min_size}) 미만")
             return {"code": "error", "msg": f"주문 수량은 {min_size} 이상이어야 합니다"}
         
         if amount % lot_size != 0:
             adjusted_amount = round(amount / lot_size) * lot_size
-            logger.warning(f"⚠️ 수량({amount})이 lot size({lot_size})의 배수가 아님. 조정된 수량: {adjusted_amount}")
+            logger.warning(f"⚠️ 수량 조정: {amount} → {adjusted_amount}")
             amount = adjusted_amount
         
         method = "POST"
@@ -213,15 +283,15 @@ class OKXTrader:
         
         body_str = json.dumps(body)
         headers = self.sign_request(method, path, body_str)
-        logger.info(f"📤 주문 전송: 심볼={symbol}, 방향={side}, 수량={amount}, 타입={order_type}")
+        logger.info(f"📤 주문 전송: {side} {amount} {symbol}")
         
         try:
-            response = requests.post(
+            response = make_request_with_proxy(
+                'POST',
                 self.base_url + path,
                 headers=headers,
                 data=body_str,
-                verify=False,
-                timeout=10
+                verify=False
             )
             result = response.json()
             
@@ -238,12 +308,7 @@ class OKXTrader:
 def validate_webhook_token(token):
     """웹훅 토큰 검증"""
     expected_token = os.getenv('WEBHOOK_TOKEN', 'piona0413')
-    is_valid = token == expected_token
-    if not is_valid:
-        logger.warning(f"🚫 잘못된 토큰: {token}")
-    else:
-        logger.info("🔐 토큰 검증 성공")
-    return is_valid
+    return token == expected_token
 
 def parse_tradingview_webhook(data):
     """TradingView 웹훅 데이터 파싱"""
@@ -258,39 +323,25 @@ def parse_tradingview_webhook(data):
             if field not in webhook_data:
                 raise ValueError(f"필수 필드 누락: {field}")
         
-        # 수량 검증 및 조정
-        trader = OKXTrader()
-        instrument_info = trader.get_instrument_info(webhook_data['symbol'])
-        if instrument_info:
-            lot_size = float(instrument_info['lotSz'])
-            quantity = float(webhook_data.get('quantity', 0.001))
-            if quantity % lot_size != 0:
-                adjusted_quantity = round(quantity / lot_size) * lot_size
-                logger.warning(f"⚠️ 웹훅 수량({quantity})이 lot size({lot_size})의 배수가 아님. 조정된 수량: {adjusted_quantity}")
-                webhook_data['quantity'] = adjusted_quantity
-        
-        parsed = {
+        return {
             'action': webhook_data['action'].lower(),
             'symbol': webhook_data['symbol'],
-            'quantity': webhook_data.get('quantity', 0.001),
+            'quantity': float(webhook_data.get('quantity', 0.001)),
             'price': webhook_data.get('price'),
             'order_type': webhook_data.get('order_type', 'market'),
             'message': webhook_data.get('message', ''),
             'token': webhook_data.get('token', '')
         }
         
-        logger.info(f"📨 웹훅 파싱 완료: {parsed['action']} {parsed['quantity']} {parsed['symbol']}")
-        return parsed
-        
     except Exception as e:
-        logger.error(f"❌ 웹훅 데이터 파싱 오류: {e}")
+        logger.error(f"❌ 웹훅 파싱 오류: {e}")
         return None
 
 @app.route('/', methods=['GET'])
 def home():
     """홈페이지"""
     return jsonify({
-        "message": "🚀 TradingView → OKX 자동거래 봇 실행 중!",
+        "message": "🚀 TradingView → OKX 자동거래 봇 (프록시 적용)",
         "endpoints": {
             "webhook": "/webhook",
             "status": "/status", 
@@ -306,32 +357,27 @@ def webhook():
     try:
         logger.info("📨 웹훅 요청 수신!")
         
-        # 편지를 열어보기
         letter = request.get_data(as_text=True)
         if not letter or letter.strip() == "":
-            logger.warning("⚠️ 빈 편지 받음!")
-            return jsonify({"status": "error", "message": "빈 편지"}), 400
+            return jsonify({"status": "error", "message": "빈 요청"}), 400
         
-        # 편지를 제대로 읽기
         webhook_data = json.loads(letter)
-        logger.info(f"📨 받은 편지 내용: {webhook_data}")
+        logger.info(f"📨 웹훅 데이터: {webhook_data}")
         
         parsed_data = parse_tradingview_webhook(webhook_data)
         if not parsed_data:
-            return jsonify({"status": "error", "message": "잘못된 편지 형식"}), 400
+            return jsonify({"status": "error", "message": "잘못된 데이터"}), 400
         
-        # 토큰 확인
         if not validate_webhook_token(parsed_data['token']):
-            return jsonify({"status": "error", "message": "토큰이 틀렸어요"}), 403
+            return jsonify({"status": "error", "message": "토큰 오류"}), 403
         
-        # 거래 실행
         action = parsed_data['action']
         symbol = parsed_data['symbol']
-        quantity = float(parsed_data['quantity'])
+        quantity = parsed_data['quantity']
         price = parsed_data.get('price')
         order_type = parsed_data['order_type']
         
-        logger.info(f"🎯 실행할 작업: {action.upper()} {quantity} {symbol}")
+        logger.info(f"🎯 거래 실행: {action.upper()} {quantity} {symbol}")
         
         trader = OKXTrader()
         
@@ -346,25 +392,21 @@ def webhook():
         elif action == 'close':
             result = trader.close_position(symbol, 'both')
         else:
-            return jsonify({"status": "error", "message": f"알 수 없는 명령: {action}"}), 400
+            return jsonify({"status": "error", "message": f"알 수 없는 액션: {action}"}), 400
         
         if result['code'] == '0':
-            logger.info(f"✅ 거래 성공! {result}")
+            logger.info(f"✅ 거래 성공!")
             return jsonify({
                 "status": "success",
-                "message": f"{action.upper()} 주문 완료! 🎉",
+                "message": f"{action.upper()} 완료!",
                 "data": result
             })
         else:
-            logger.error(f"❌ 거래 실패: {result}")
             return jsonify({
                 "status": "error",
-                "message": f"거래 실패: {result.get('msg', '알 수 없는 오류')}"
+                "message": f"거래 실패: {result.get('msg', '오류')}"
             }), 500
             
-    except json.JSONDecodeError as e:
-        logger.error(f"❌ JSON 파싱 오류: {e}")
-        return jsonify({"status": "error", "message": "JSON 형식이 잘못됨"}), 400
     except Exception as e:
         logger.error(f"❌ 웹훅 처리 오류: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -372,26 +414,21 @@ def webhook():
 @app.route('/status', methods=['GET'])
 def status():
     """서버 상태 확인"""
-    trader = OKXTrader()
     return jsonify({
-        "status": "🟢 RUNNING",
+        "status": "🟢 RUNNING (프록시 적용)",
         "timestamp": datetime.now().isoformat(),
-        "market": trader.default_market,
-        "trading_mode": trader.default_tdmode,
-        "simulated": trader.simulated == '1',
-        "message": "자동거래 봇이 정상 작동 중입니다! 🚀"
+        "message": "프록시 기능이 적용된 자동거래 봇"
     })
 
 @app.route('/positions', methods=['GET'])
 def get_positions():
-    """현재 포지션 조회"""
+    """포지션 조회"""
     try:
         trader = OKXTrader()
-        symbol = request.args.get('symbol')  # ?symbol=BTC-USDT-SWAP 옵션
+        symbol = request.args.get('symbol')
         positions = trader.get_positions(symbol)
         return jsonify(positions)
     except Exception as e:
-        logger.error(f"❌ 포지션 조회 오류: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/balance', methods=['GET'])
@@ -402,41 +439,31 @@ def get_balance():
         method = "GET"
         path = "/api/v5/account/balance"
         headers = trader.sign_request(method, path)
-        response = requests.get(
+        response = make_request_with_proxy(
+            'GET',
             trader.base_url + path,
             headers=headers,
-            verify=False,
-            timeout=10
+            verify=False
         )
         return jsonify(response.json())
     except Exception as e:
-        logger.error(f"❌ 잔고 조회 오류: {e}")
         return jsonify({"error": str(e)}), 500
 
-# Render용 헬스체크
 @app.route('/health', methods=['GET'])
 def health():
-    """헬스체크 (Render 모니터링용)"""
+    """헬스체크"""
     return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
 
 if __name__ == '__main__':
-    # Render에서는 PORT 환경변수를 자동으로 할당해줌
     port = int(os.environ.get('PORT', 5000))
     
     print("=" * 60)
-    print("🚀 TradingView → OKX 자동거래 시스템 시작!")
+    print("🚀 프록시 적용된 자동거래 시스템 시작!")
     print("=" * 60)
     print(f"🌐 포트: {port}")
-    print(f"📊 시뮬레이션 모드: ON")
-    print(f"🎯 웹훅 URL: https://your-app-name.onrender.com/webhook")
-    print(f"📋 상태 확인: https://your-app-name.onrender.com/status")
-    print(f"💰 잔고 확인: https://your-app-name.onrender.com/balance")
-    print(f"📊 포지션 확인: https://your-app-name.onrender.com/positions")
-    print("=" * 60)
-    print("✅ 준비 완료! TradingView 신호를 기다리는 중...")
+    print(f"🛡️ Cloudflare 우회: 프록시 + 헤더 변조")
     print("=" * 60)
     
-    # 웹서버 시작 - Render 배포용 설정
     app.run(host='0.0.0.0', port=port, debug=False)
 
 
